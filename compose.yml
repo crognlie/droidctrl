@@ -4,6 +4,8 @@ services:
     build: .
     container_name: droidctrl
     restart: unless-stopped
+    init: true
+    stop_grace_period: 15s
     privileged: true
     devices:
       - /dev/bus/usb:/dev/bus/usb
@@ -16,6 +18,7 @@ services:
       - SCREEN_W=${SCREEN_WIDTH:-1080}
       - SCREEN_H=${SCREEN_HEIGHT:-2400}
       - SCREEN_RES=${SCREEN_WIDTH:-1080}x${SCREEN_HEIGHT:-2400}x24
+      - USB_RESET_VID=${USB_RESET_VID:-18d1}
     volumes:
       - ./data:/data
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro

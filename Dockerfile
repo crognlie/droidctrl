@@ -31,7 +31,8 @@ RUN set -ex && \
 
 COPY start.sh /start.sh
 COPY clipboard.py /clipboard.py
-RUN chmod +x /start.sh
+COPY usb_reset.py /usb_reset.py
+RUN chmod +x /start.sh /usb_reset.py
 
 EXPOSE 6080
 EXPOSE 6081
