@@ -1,0 +1,7 @@
+.env
+data/
+compose.override.yml
+compose.override.yaml
+
+# Automator lives in its own repo; clone into ./automator to enable the profile.
+automator/

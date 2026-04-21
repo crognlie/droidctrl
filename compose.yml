@@ -1,0 +1,41 @@
+name: droidctrl
+services:
+  scrcpy:
+    build: .
+    container_name: droidctrl
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    ports:
+      - "${NOVNC_PORT:-6080}:6080"
+    environment:
+      - TZ=${TZ:-UTC}
+      - NOVNC_HOST=${NOVNC_HOST:-}
+      - NOVNC_PORT=${NOVNC_PORT:-6080}
+      - SCREEN_W=${SCREEN_WIDTH:-1080}
+      - SCREEN_H=${SCREEN_HEIGHT:-2400}
+      - SCREEN_RES=${SCREEN_WIDTH:-1080}x${SCREEN_HEIGHT:-2400}x24
+    volumes:
+      - ./data:/data
+      - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
+      - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
+
+  # Optional — requires the automator repo cloned into ./automator.
+  # Enable with: docker compose --profile automator up
+  automator:
+    profiles: ["automator"]
+    build: ./automator
+    container_name: droidctrl-automator
+    restart: unless-stopped
+    depends_on:
+      - scrcpy
+    environment:
+      - ADB_SERVER_SOCKET=tcp:droidctrl:5037
+      - POLL_INTERVAL=${POLL_INTERVAL:-300}
+      - TARGETS=${TARGETS:-claim,retry}
+      - MIN_CONFIDENCE=${MIN_CONFIDENCE:-80}
+      - SCALE=${SCALE:-3}
+    volumes:
+      - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
+      - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
