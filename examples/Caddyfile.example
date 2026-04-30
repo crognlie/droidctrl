@@ -20,18 +20,25 @@ yourhost.example.com {
 	@droidctrl_bare path /droidctrl
 	redir @droidctrl_bare /droidctrl/
 
-	# The wrapper page: a minimal iframe hosting noVNC, plus inline JS
-	# that drives clipboard polling and mouse-wheel → touch-swipe
-	# translation. Served as a top-level page (not inside the noVNC
-	# iframe) so it can:
+	# The wrapper page: an iframe hosting noVNC, plus JS that drives
+	# clipboard polling and mouse-wheel → touch-swipe translation. The
+	# file itself lives in the droidctrl repo at web/index.html — bind
+	# mount that directory into the caddy container (see example below)
+	# and Caddy serves it as a static file. Served as a top-level page
+	# (not inside the noVNC iframe) so it can:
 	#   - call navigator.clipboard.writeText() with a secure context
 	#   - reach into the iframe's DOM (same origin) to read the
 	#     noVNC_clipboard_text textarea and attach wheel listeners on
 	#     noVNC's canvas
+	#
+	# Requires a bind mount in the caddy service, e.g.:
+	#     volumes:
+	#       - /path/to/droidctrl/web:/srv/droidctrl:ro
 	@droidctrl_index path /droidctrl/
 	handle @droidctrl_index {
-		header Content-Type "text/html; charset=utf-8"
-		respond `<!DOCTYPE html><html style="margin:0;padding:0;overflow:hidden"><head><title>Android</title></head><body style="margin:0;padding:0;overflow:hidden"><iframe id="vnc" src="/droidctrl/vnc.html?autoconnect=true&resize=scale&path=droidctrl/websockify" allow="clipboard-read clipboard-write" style="border:none;width:100%;height:100vh"></iframe><script>(function(){let last='';let pending=null;async function poll(){try{const r=await fetch('/droidctrl/clipboard');if(!r.ok)return;const t=await r.text();if(t===last)return;last=t;pending=t;const f=document.getElementById('vnc');if(f&&f.contentDocument){const ta=f.contentDocument.getElementById('noVNC_clipboard_text');if(ta)ta.value=t;}}catch(e){}}setInterval(poll,2000);function writeClip(){if(pending!==null&&navigator.clipboard){const p=pending;navigator.clipboard.writeText(p).then(()=>{if(pending===p)pending=null;}).catch(()=>{});}}let sa=0,sip=false,lx=540,ly=1200;const frame=document.getElementById('vnc');function atk(){const d=frame.contentDocument;if(!d||!d.getElementById('noVNC_clipboard_text'))return setTimeout(atk,300);d.addEventListener('wheel',function(e){e.preventDefault();e.stopImmediatePropagation();const cv=d.querySelector('canvas');if(cv){const r=cv.getBoundingClientRect();if(r.width>0&&r.height>0){lx=Math.round((e.clientX-r.left)/r.width*1080);ly=Math.round((e.clientY-r.top)/r.height*2400);}}sa+=e.deltaY;if(!sip)fs();},{passive:false,capture:true});['click','keydown','mousedown','pointerdown'].forEach(ev=>{d.addEventListener(ev,writeClip,{capture:true,passive:true});});}frame.addEventListener('load',atk);setTimeout(atk,200);async function fs(){if(sa===0){sip=false;return;}sip=true;const dy=sa;sa=0;const dir=dy>0?'up':'down';const amount=Math.min(Math.abs(dy)*3,1200);try{await fetch('/droidctrl/swipe?dir='+dir+'&amount='+amount+'&x='+lx+'&y='+ly);}catch(e){}fs();}})();</script></body></html>` 200
+		root * /srv/droidctrl
+		rewrite * /index.html
+		file_server
 	}
 
 	# Phone clipboard → browser: Flask reads Xvfb CLIPBOARD via xclip.
@@ -53,7 +60,7 @@ yourhost.example.com {
 	}
 }
 
-# The inline JS hardcodes phone screen dimensions as 1080x2400 — if your
+# The wrapper JS hardcodes phone screen dimensions as 1080x2400 — if your
 # device is a different resolution, edit the two occurrences in the
-# wheel-handler (/r.width*1080 and /r.height*2400) to match what you set
-# as SCREEN_WIDTH / SCREEN_HEIGHT in droidctrl's .env.
+# wheel-handler inside web/index.html (*1080 and *2400) to match what you
+# set as SCREEN_WIDTH / SCREEN_HEIGHT in droidctrl's .env.

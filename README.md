@@ -65,9 +65,11 @@ Open the URL printed by `docker compose logs scrcpy | grep Ready`, e.g.
 Over plain HTTP at a non-localhost URL, the phone → host-clipboard sync
 silently fails. You must terminate TLS somewhere in front of droidctrl.
 
-A full working Caddyfile block is in
-[`examples/Caddyfile.example`](examples/Caddyfile.example). Copy it next to
-your existing Caddyfile (or merge into it). Skeleton:
+The wrapper page's HTML + JS lives in this repo at
+[`web/index.html`](web/index.html) — bind-mount that directory into your
+Caddy container (`- /path/to/droidctrl/web:/srv/droidctrl:ro`) and Caddy
+serves it as a static file. A full working Caddyfile block is in
+[`examples/Caddyfile.example`](examples/Caddyfile.example). Skeleton:
 
 ```caddyfile
 yourhost.example.com {
@@ -77,12 +79,12 @@ yourhost.example.com {
     @droidctrl_bare path /droidctrl
     redir @droidctrl_bare /droidctrl/
 
-    # Wrapper page — serves the iframe + inline JS that drives clipboard
-    # polling, mouse-wheel → touch-swipe, and host-clipboard write.
+    # Wrapper page (static file from the droidctrl repo's web/ dir)
     @droidctrl_index path /droidctrl/
     handle @droidctrl_index {
-        header Content-Type "text/html; charset=utf-8"
-        respond `<!DOCTYPE html>...(see examples/Caddyfile.example)...` 200
+        root * /srv/droidctrl
+        rewrite * /index.html
+        file_server
     }
 
     # Flask endpoints on port 6081
@@ -120,6 +122,8 @@ through all four handlers *and* the absolute paths in the inline JS.
 | `SCREEN_WIDTH` | Phone screen width in pixels | `1080` |
 | `SCREEN_HEIGHT` | Phone screen height in pixels | `2400` |
 | `NOVNC_PORT` | Host-side port to expose noVNC on | `6080` |
+| `REVERSE_TETHER` | Route phone internet through the container via USB (see below) | `false` |
+| `USB_RESET_VID` | USB vendor ID to reset on wedge (hex, no `0x`) | `18d1` (Google) |
 
 Find your phone's resolution with: `adb shell wm size`.
 
@@ -138,6 +142,15 @@ Find your phone's resolution with: `adb shell wm size`.
   converted to ADB touch swipes starting at your cursor's phone coordinate.
   Works in apps that ignore Android's `ACTION_SCROLL` (Unity games, etc.)
   and in partial-height scrollable panels.
+- **Auto-reconnect**: when the phone disconnects, scrcpy exits cleanly and
+  the container waits indefinitely for it to come back. Each retry attempt
+  issues a `USBDEVFS_RESET` on the phone's USB device to clear wedged bulk
+  endpoints before restarting the ADB server.
+- **Reverse tethering** (opt-in): set `REVERSE_TETHER=true` in `.env` to
+  route the phone's internet traffic through the container via USB using
+  [gnirehtet](https://github.com/Genymobile/gnirehtet). No WiFi needed on
+  the phone; the relay runs inside the container and reinitialises on every
+  reconnect. See [Reverse tethering](#reverse-tethering) below.
 
 ## Automation (optional)
 
@@ -214,15 +227,49 @@ layer caching.
   `Dockerfile`, or override at build: `docker compose build
   --build-arg SCRCPY_VERSION=v3.4.0`.
 
+## Reverse tethering
+
+Set `REVERSE_TETHER=true` in `.env` and restart to give the phone internet
+through the USB connection instead of (or in addition to) its own WiFi.
+
+```bash
+# .env
+REVERSE_TETHER=true
+```
+
+How it works: [gnirehtet](https://github.com/Genymobile/gnirehtet) installs a
+small APK on the phone and starts a relay inside the container. All phone
+traffic tunnels over ADB to the relay, which forwards it through the
+container's network interface. The phone occupies its system VPN slot while
+tethering is active.
+
+**First run**: the phone will show a VPN permission dialog — tap **OK**. After
+that, authorization is remembered and future connects are silent.
+
+**To check which path the phone is using:**
+
+```bash
+docker exec droidctrl adb shell ip route show
+```
+
+- Reverse tether active: `default via 10.0.2.2 dev tun0`
+- WiFi only: route via `wlan0`, no `tun0` default
+
+**Conflict**: gnirehtet uses Android's built-in VPN slot. It will be
+incompatible with other always-on VPN apps running on the phone at the same
+time. Set `REVERSE_TETHER=false` and restart to disable.
+
 ## Troubleshooting
 
 - **noVNC stuck at "Connecting"**: check `docker logs droidctrl` for
   `EGL not initialized` or a stale `/tmp/.X1-lock`. The container recreates
   should handle this, but if you hit it, `docker compose restart`.
 - **ADB in the container loops reconnecting** ("read failed: Success",
-  "write terminated: Connection timed out"): the phone's USB endpoints are
-  wedged. Unplug + replug the cable, or reset the USB port via sysfs
-  (`echo 0 > /sys/bus/usb/devices/<bus>-<port>/authorized`, then `1`).
+  "write terminated: Connection timed out"): the container automatically
+  issues a `USBDEVFS_RESET` and restarts the ADB server on each retry, so
+  most wedge conditions clear themselves when you replug. If it stays stuck,
+  reset the USB port manually via sysfs:
+  `echo 0 > /sys/bus/usb/devices/<bus>-<port>/authorized`, then `echo 1`.
 - **Scroll wheel does nothing in-app**: confirm scroll works in Android's
   launcher or Settings first — if it works there but not in your app, the
   app is swallowing swipe at that screen region; try scrolling while
