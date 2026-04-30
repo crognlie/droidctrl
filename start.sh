@@ -11,6 +11,7 @@ PUBLIC_NOVNC_PORT="${NOVNC_PORT:-$INTERNAL_NOVNC_PORT}"
 
 SCRCPY_PID=""
 ADB_PID=""
+GNIREHTET_PID=""
 
 # Graceful shutdown: kill scrcpy first (so it flushes its USB bulk transfers),
 # then ask adb server to cleanly close the USB transport. Without this, SIGKILL
@@ -19,6 +20,7 @@ cleanup() {
     trap - TERM INT EXIT
     echo "[*] Shutdown — killing scrcpy and adb server cleanly"
     [ -n "$SCRCPY_PID" ] && kill -TERM "$SCRCPY_PID" 2>/dev/null || true
+    [ -n "$GNIREHTET_PID" ] && kill -TERM "$GNIREHTET_PID" 2>/dev/null || true
     sleep 1
     adb kill-server 2>/dev/null || true
     [ -n "$ADB_PID" ] && kill -TERM "$ADB_PID" 2>/dev/null || true
@@ -68,6 +70,16 @@ echo "[*] Device found: $(adb devices | tail -n +2 | head -1)"
 echo "[*] Setting device to stay on while plugged in"
 adb shell svc power stayon usb 2>/dev/null || true
 
+start_reverse_tether() {
+    if [ "${REVERSE_TETHER:-false}" = "true" ]; then
+        echo "[*] Starting reverse tether (gnirehtet)"
+        [ -n "$GNIREHTET_PID" ] && kill -TERM "$GNIREHTET_PID" 2>/dev/null || true
+        (cd /usr/local/bin && gnirehtet run) &
+        GNIREHTET_PID=$!
+    fi
+}
+start_reverse_tether
+
 echo "[*] Starting clipboard server on port 6081"
 python3 /clipboard.py &
 
@@ -106,6 +118,17 @@ while true; do
     wait "$SCRCPY_PID" 2>/dev/null || true
     echo "[!] scrcpy exited, restarting in 3s..."
     sleep 3
-    adb wait-for-device 2>/dev/null || true
+    attempt=0
+    while ! timeout 8 adb wait-for-device 2>/dev/null; do
+        attempt=$((attempt + 1))
+        echo "[!] No device after 8s on reconnect (attempt $attempt), retrying..."
+        python3 /usb_reset.py "${USB_RESET_VID:-18d1}" || true
+        adb kill-server 2>/dev/null || true
+        sleep 2
+        adb -a -P 5037 nodaemon server &
+        ADB_PID=$!
+        sleep 2
+    done
     adb shell svc power stayon usb 2>/dev/null || true
+    start_reverse_tether
 done

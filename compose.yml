@@ -19,10 +19,13 @@ services:
       - SCREEN_H=${SCREEN_HEIGHT:-2400}
       - SCREEN_RES=${SCREEN_WIDTH:-1080}x${SCREEN_HEIGHT:-2400}x24
       - USB_RESET_VID=${USB_RESET_VID:-18d1}
+      - REVERSE_TETHER=${REVERSE_TETHER:-false}
     volumes:
       - ./data:/data
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
+      # Custom favicon set (replaces the stock noVNC icons).
+      - ./favicons:/usr/share/novnc/app/images/icons:ro
 
   # Optional — requires the automator repo cloned into ./automator.
   # Enable with: docker compose --profile automator up
@@ -35,10 +38,19 @@ services:
       - scrcpy
     environment:
       - ADB_SERVER_SOCKET=tcp:droidctrl:5037
-      - POLL_INTERVAL=${POLL_INTERVAL:-300}
-      - TARGETS=${TARGETS:-claim,retry}
+      - POLL_INTERVAL=${POLL_INTERVAL:-10}
+      - RETRY_INTERVAL=${RETRY_INTERVAL:-300}
       - MIN_CONFIDENCE=${MIN_CONFIDENCE:-80}
       - SCALE=${SCALE:-3}
+      - GEM_MIN_SCORE=${GEM_MIN_SCORE:-0.70}
+      - GEM_RADIUS_MIN=${GEM_RADIUS_MIN:-280}
+      - GEM_RADIUS_MAX=${GEM_RADIUS_MAX:-360}
+      - GEM_PERIOD=${GEM_PERIOD:-12.0}
+      - PIPELINE_LATENCY=${PIPELINE_LATENCY:-0.9}
     volumes:
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
+      # Bind-mount source so `docker compose restart automator` picks up
+      # edits without rebuilding the image.
+      - ./automator/automator.py:/automator.py:ro
+      - ./automator/gem.py:/gem.py:ro

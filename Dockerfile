@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     libsdl2-2.0-0 \
     libv4l-dev \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin scrcpy version for reproducible builds (known-good with Android 16 on Pixel 6a)
@@ -28,6 +29,15 @@ RUN set -ex && \
     install -m 644 "$DIR/scrcpy-server" /usr/local/bin/scrcpy-server && \
     rm -rf /tmp/scrcpy-* && \
     ln -s /usr/bin/adb /usr/local/bin/adb
+
+ARG GNIREHTET_VERSION=v2.5.1
+RUN set -ex && \
+    curl -fL "https://github.com/Genymobile/gnirehtet/releases/download/${GNIREHTET_VERSION}/gnirehtet-rust-linux64-${GNIREHTET_VERSION}.zip" \
+        -o /tmp/gnirehtet.zip && \
+    unzip /tmp/gnirehtet.zip -d /tmp/gnirehtet && \
+    install -m 755 /tmp/gnirehtet/gnirehtet-rust-linux64/gnirehtet /usr/local/bin/gnirehtet && \
+    install -m 644 /tmp/gnirehtet/gnirehtet-rust-linux64/gnirehtet.apk /usr/local/bin/gnirehtet.apk && \
+    rm -rf /tmp/gnirehtet*
 
 COPY start.sh /start.sh
 COPY clipboard.py /clipboard.py
