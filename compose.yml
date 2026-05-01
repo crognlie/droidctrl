@@ -7,8 +7,6 @@ services:
     init: true
     stop_grace_period: 15s
     privileged: true
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
     ports:
       - "${NOVNC_PORT:-6080}:6080"
     environment:
@@ -21,6 +19,7 @@ services:
       - USB_RESET_VID=${USB_RESET_VID:-18d1}
       - REVERSE_TETHER=${REVERSE_TETHER:-false}
     volumes:
+      - /dev/bus/usb:/dev/bus/usb
       - ./data:/data
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
