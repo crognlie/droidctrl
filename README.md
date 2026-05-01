@@ -270,6 +270,11 @@ time. Set `REVERSE_TETHER=false` and restart to disable.
   most wedge conditions clear themselves when you replug. If it stays stuck,
   reset the USB port manually via sysfs:
   `echo 0 > /sys/bus/usb/devices/<bus>-<port>/authorized`, then `echo 1`.
+- **Phone not detected after host reboot**: the container recovers
+  automatically once the phone re-enumerates on USB — no restart needed.
+  If it stays stuck, replug the cable; Android sometimes reverts to
+  charging-only mode after a host reboot and needs a replug to re-expose
+  the ADB interface.
 - **Scroll wheel does nothing in-app**: confirm scroll works in Android's
   launcher or Settings first — if it works there but not in your app, the
   app is swallowing swipe at that screen region; try scrolling while
