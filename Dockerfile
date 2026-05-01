@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y \
     libsdl2-2.0-0 \
     libv4l-dev \
     unzip \
+    usbutils \
     && rm -rf /var/lib/apt/lists/*
 
 # Pin scrcpy version for reproducible builds (known-good with Android 16 on Pixel 6a)
