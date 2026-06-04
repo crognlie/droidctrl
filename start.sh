@@ -90,6 +90,7 @@ x11vnc \
     -forever \
     -shared \
     -rfbport "$VNC_PORT" \
+    -wait 33 \
     -quiet &
 
 echo "[*] Starting noVNC on port $INTERNAL_NOVNC_PORT"
@@ -106,7 +107,7 @@ while true; do
     scrcpy \
         --no-audio \
         --turn-screen-off \
-        --max-fps=60 \
+        --max-fps=30 \
         --video-bit-rate=8M \
         --window-borderless \
         --window-x=0 \
