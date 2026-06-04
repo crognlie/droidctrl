@@ -47,3 +47,5 @@ services:
       # edits without rebuilding the image.
       - ./automator/automator.py:/automator.py:ro
       - ./automator/gem.py:/gem.py:ro
+      - ./automator/backup.py:/backup.py:ro
+      - ${BACKUP_DIR:-/tmp/automator-backup}:/backup
