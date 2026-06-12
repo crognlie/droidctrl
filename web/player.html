@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<!--
+  Native H.264 player for the no-display stack. Served at /droidctrl/ by the
+  aiohttp stream server (port 6080) when compose.nodisplay.yml is active.
+  The browser decodes H.264 via the WebCodecs API — no VNC pipeline.
+-->
+<html style="margin:0;padding:0;overflow:hidden">
+<head>
+  <meta charset="utf-8">
+  <title>Android</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #000; overflow: hidden; }
+    body { display: flex; flex-direction: column; }
+    #status {
+      flex-shrink: 0;
+      display: flex; align-items: center; justify-content: space-between;
+      color: #aaa; font: 11px/1.6 monospace;
+      background: #111; padding: 2px 8px; gap: 12px;
+    }
+    #stattext { flex: 1; white-space: nowrap; overflow: hidden; }
+    #bwctl { white-space: nowrap; flex-shrink: 0; }
+    #bwctl select {
+      background: #222; color: #ccc; border: 1px solid #444;
+      font: inherit; padding: 1px 2px; cursor: pointer; border-radius: 2px;
+    }
+    #viewport {
+      flex: 1; min-height: 0;
+      display: flex; flex-direction: row; align-items: center;
+      overflow: hidden;
+    }
+    #left-margin  { flex: 1; }
+    canvas        { flex: 0 1 auto; max-height: 100%; cursor: crosshair; }
+    #right-margin { flex: 1; min-width: 64px; display: flex; justify-content: center; align-items: center; }
+    #sidebar {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 16px;
+    }
+    .nav-btn {
+      width: 44px; height: 44px;
+      background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.2);
+      border-radius: 8px; color: #ccc; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      position: relative; transition: background .15s;
+    }
+    .nav-btn:hover { background: rgba(255,255,255,.18); }
+    .nav-btn.toggle-on {
+      background: rgba(80,200,100,.2); border-color: rgba(80,200,100,.5); color: #7ded90;
+    }
+    .nav-btn.toggle-on:hover { background: rgba(80,200,100,.3); }
+    .nav-btn svg { width: 22px; height: 22px; }
+    .nav-btn::after {
+      content: attr(data-tip);
+      position: absolute; right: calc(100% + 8px); top: 50%;
+      transform: translateY(-50%);
+      background: rgba(0,0,0,.85); color: #fff;
+      font: 11px/1.4 monospace; padding: 3px 7px; border-radius: 4px;
+      white-space: nowrap; pointer-events: none;
+      opacity: 0; transition: opacity .15s;
+    }
+    .nav-btn:hover::after { opacity: 1; }
+  </style>
+</head>
+<body>
+  <div id="status">
+    <span id="stattext">connecting…</span>
+    <span id="streaminfo"></span>
+    <span id="bwctl">max bitrate <select id="bitsel">
+      <option value="1M">1 Mb/s</option>
+      <option value="2M">2 Mb/s</option>
+      <option value="4M">4 Mb/s</option>
+      <option value="8M" selected>8 Mb/s</option>
+      <option value="16M">16 Mb/s</option>
+    </select></span>
+  </div>
+  <div id="viewport">
+    <div id="left-margin"></div>
+    <canvas id="c"></canvas>
+    <div id="right-margin">
+      <nav id="sidebar">
+        <button class="nav-btn" data-kc="3" data-tip="Home">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="9"/>
+          </svg>
+        </button>
+        <button class="nav-btn" data-kc="187" data-tip="Recent apps">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="3"/>
+          </svg>
+        </button>
+      </nav>
+    </div>
+  </div>
+  <script>
+'use strict';
+
+const canvas   = document.getElementById('c');
+const ctx      = canvas.getContext('2d');
+const status   = document.getElementById('status');    // kept for any remaining refs
+const stattext = document.getElementById('stattext');
+const bitsel      = document.getElementById('bitsel');
+const streaminfo  = document.getElementById('streaminfo');
+const sidebar     = document.getElementById('sidebar');
+
+// Default SVG for server-registered toggles that don't supply their own icon.
+const TOGGLE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+  <circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3
+    M4.9 4.9l2.1 2.1m9.9 9.9 2.1 2.1M4.9 19.1l2.1-2.1m9.9-9.9 2.1-2.1"/>
+</svg>`;
+
+function applyToggleStates(states) {
+  for (const [id, state] of Object.entries(states)) {
+    const btn = sidebar.querySelector(`[data-toggle-id="${CSS.escape(id)}"]`);
+    if (btn) btn.classList.toggle('toggle-on', !!state);
+  }
+}
+
+// Load server-registered one-shot buttons on page load.
+async function loadButtons() {
+  const r = await fetch('/droidctrl/sidebar-button/list').catch(() => null);
+  if (!r?.ok) return;
+  const list = await r.json();
+  sidebar.querySelectorAll('[data-button-id]').forEach(el => el.remove());
+  for (const b of list) {
+    const btn = document.createElement('button');
+    btn.className = 'nav-btn';
+    btn.dataset.tip = b.tooltip;
+    btn.dataset.buttonId = b.id;
+    btn.innerHTML = b.icon || TOGGLE_ICON;
+    sidebar.appendChild(btn);
+  }
+}
+loadButtons();
+
+// Load server-registered toggles (automator-added) on page load.
+async function loadToggles() {
+  const r = await fetch('/droidctrl/toggle/list').catch(() => null);
+  if (!r?.ok) return;
+  const list = await r.json();
+  sidebar.querySelectorAll('[data-toggle-id]').forEach(el => el.remove());
+  for (const t of list) droidctrlAddToggle(t.id, t.icon || TOGGLE_ICON, t.tooltip, t.state);
+}
+loadToggles();
+
+// Poll toggle states every 2s so automator-driven changes propagate.
+setInterval(async () => {
+  const r = await fetch('/droidctrl/toggle/states').catch(() => null);
+  if (r?.ok) applyToggleStates(await r.json());
+}, 2000);
+
+// Built-in nav buttons (keyevent via server)
+sidebar.addEventListener('click', e => {
+  const btn = e.target.closest('.nav-btn');
+  if (!btn) return;
+  if (btn.dataset.kc) {
+    fetch(`/droidctrl/keyevent?code=${btn.dataset.kc}`).catch(() => {});
+  } else if (btn.dataset.toggleId) {
+    fetch(`/droidctrl/toggle/click?id=${encodeURIComponent(btn.dataset.toggleId)}`)
+      .then(r => r.json())
+      .then(d => btn.classList.toggle('toggle-on', d.state))
+      .catch(() => {});
+  } else if (btn.dataset.buttonId) {
+    fetch(`/droidctrl/sidebar-button/click?id=${encodeURIComponent(btn.dataset.buttonId)}`).catch(() => {});
+  }
+});
+
+// Hook: add a one-shot button. action = {kc: keycode} or {url: '/path'}.
+window.droidctrlAddButton = (svgHTML, tooltip, action) => {
+  const btn = document.createElement('button');
+  btn.className = 'nav-btn';
+  btn.dataset.tip = tooltip;
+  btn.innerHTML = svgHTML;
+  if (action.kc !== undefined)
+    btn.addEventListener('click', () => fetch(`/droidctrl/keyevent?code=${action.kc}`).catch(() => {}));
+  else if (action.url)
+    btn.addEventListener('click', () => fetch(action.url).catch(() => {}));
+  sidebar.appendChild(btn);
+};
+
+// Hook: add a stateful toggle. Server-registered toggles are added via loadToggles().
+// JS callers (e.g. browser console) can call this directly.
+window.droidctrlAddToggle = (id, svgHTML, tooltip, initialState = false) => {
+  // Remove existing button with the same id if re-registering.
+  sidebar.querySelector(`[data-toggle-id="${CSS.escape(id)}"]`)?.remove();
+  const btn = document.createElement('button');
+  btn.className = 'nav-btn' + (initialState ? ' toggle-on' : '');
+  btn.dataset.tip = tooltip;
+  btn.dataset.toggleId = id;
+  btn.innerHTML = svgHTML || TOGGLE_ICON;
+  sidebar.appendChild(btn);
+};
+bitsel.addEventListener('change', () => {
+  fetch(`/droidctrl/bitrate?value=${bitsel.value}`).catch(() => {});
+});
+
+// Sync dropdown to whatever the server currently has (survives restarts).
+fetch('/droidctrl/settings').then(r => r.json()).then(s => {
+  if (s.bitrate) bitsel.value = s.bitrate;
+}).catch(() => {});
+
+// ---------------------------------------------------------------------------
+// NAL unit helpers (H.264 Annex B)
+// ---------------------------------------------------------------------------
+
+function stripStartCode(nal) {
+  if (nal.length >= 4 && nal[0] === 0 && nal[1] === 0 && nal[2] === 0 && nal[3] === 1) return nal.subarray(4);
+  if (nal.length >= 3 && nal[0] === 0 && nal[1] === 0 && nal[2] === 1) return nal.subarray(3);
+  return nal;
+}
+
+function nalType(raw) { return raw[0] & 0x1f; }
+
+function buildAvcC(sps, pps) {
+  const out = new Uint8Array(11 + sps.length + pps.length);
+  let i = 0;
+  out[i++] = 1; out[i++] = sps[1]; out[i++] = sps[2]; out[i++] = sps[3];
+  out[i++] = 0xff; out[i++] = 0xe1;
+  out[i++] = (sps.length >> 8) & 0xff; out[i++] = sps.length & 0xff;
+  out.set(sps, i); i += sps.length;
+  out[i++] = 1;
+  out[i++] = (pps.length >> 8) & 0xff; out[i++] = pps.length & 0xff;
+  out.set(pps, i);
+  return out;
+}
+
+function toAvcc(raw) {
+  const out = new Uint8Array(4 + raw.length);
+  new DataView(out.buffer).setUint32(0, raw.length, false);
+  out.set(raw, 4);
+  return out;
+}
+
+function codecStr(sps) {
+  return 'avc1.' +
+    sps[1].toString(16).padStart(2, '0') +
+    sps[2].toString(16).padStart(2, '0') +
+    sps[3].toString(16).padStart(2, '0');
+}
+
+// ---------------------------------------------------------------------------
+// Annex-B stream splitter — buffers arbitrary chunks, emits complete NALs
+// ---------------------------------------------------------------------------
+function makeNalSplitter(onNal) {
+  let buf = new Uint8Array(0);
+
+  function findStartCodes(d) {
+    const hits = [];
+    for (let i = 0; i < d.length - 2; i++) {
+      if (d[i] === 0 && d[i+1] === 0) {
+        if (d[i+2] === 1)                              { hits.push({pos: i, len: 3}); i += 2; }
+        else if (d[i+2] === 0 && i+3 < d.length && d[i+3] === 1) { hits.push({pos: i, len: 4}); i += 3; }
+      }
+    }
+    return hits;
+  }
+
+  return function push(chunk) {
+    const m = new Uint8Array(buf.length + chunk.length);
+    m.set(buf); m.set(chunk, buf.length);
+    buf = m;
+    const scs = findStartCodes(buf);
+    for (let i = 0; i < scs.length - 1; i++) onNal(buf.subarray(scs[i].pos, scs[i+1].pos));
+    if (scs.length) buf = buf.slice(scs[scs.length-1].pos);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Stats (fps + bandwidth, 1-second buckets, 8-second rolling average)
+// ---------------------------------------------------------------------------
+const STAT_WIN = 8;
+let statFpsBuf = [], statBwBuf = [], statTickFps = 0, statTickBw = 0;
+let statCodec = '', statW = 0, statH = 0;
+
+function fmtBw(bytesPerSec) {
+  const bps = bytesPerSec * 8;
+  return bps >= 1e6
+    ? `${(bps / 1e6).toFixed(1)} Mb/s`
+    : `${(bps / 1e3).toFixed(0)} kb/s`;
+}
+
+function tickStats() {
+  statFpsBuf.push(statTickFps); statTickFps = 0;
+  statBwBuf.push(statTickBw);   statTickBw  = 0;
+  if (statFpsBuf.length > STAT_WIN) { statFpsBuf.shift(); statBwBuf.shift(); }
+
+  if (!decoder || decoder.state !== 'configured') return;
+  const curFps = statFpsBuf.at(-1);
+  const curBw  = statBwBuf.at(-1);
+  const avgFps = statFpsBuf.reduce((a, v) => a + v, 0) / statFpsBuf.length;
+  const avgBw  = statBwBuf.reduce((a, v) => a + v, 0) / statBwBuf.length;
+  stattext.textContent = `${curFps} fps  ${fmtBw(curBw)} · avg ${avgFps.toFixed(1)} fps  ${fmtBw(avgBw)}`;
+  if (statW) {
+    const r  = canvas.getBoundingClientRect();
+    const dw = Math.round(r.width), dh = Math.round(r.height);
+    const disp = (dw && dw !== statW) ? ` → ${dw}×${dh}` : '';
+    streaminfo.textContent = `${statW}×${statH}${disp} · ${statCodec}`;
+  }
+}
+setInterval(tickStats, 1000);
+
+// ---------------------------------------------------------------------------
+// VideoDecoder
+// ---------------------------------------------------------------------------
+let decoder = null, spsRaw = null, ppsRaw = null;
+
+function closeDecoder() {
+  if (decoder && decoder.state !== 'closed') decoder.close();
+  decoder = null;
+}
+
+function openDecoder(sps, pps) {
+  closeDecoder();
+  const codec = codecStr(sps);
+  statCodec = codec;
+  streaminfo.textContent = `… · ${codec}`;
+  decoder = new VideoDecoder({
+    output(frame) {
+      const fw = frame.displayWidth, fh = frame.displayHeight;
+      if (canvas.width !== fw || canvas.height !== fh) {
+        canvas.width = fw; canvas.height = fh;
+      }
+      ctx.drawImage(frame, 0, 0);
+      frame.close();
+      statTickFps++;
+      statW = fw; statH = fh;
+      resetWatchdog();
+    },
+    error(e) { console.error('[decoder]', e); closeDecoder(); },
+  });
+  decoder.configure({ codec, description: buildAvcC(sps, pps), optimizeForLatency: true });
+}
+
+function handleNal(nal) {
+  const raw = stripStartCode(nal);
+  if (!raw.length) return;
+  const t = nalType(raw);
+  if (t === 7) { spsRaw = raw; return; }
+  if (t === 8) { ppsRaw = raw; if (spsRaw) openDecoder(spsRaw, ppsRaw); return; }
+  if (t === 9 || t === 6 || t === 12) return;
+  if (!decoder || decoder.state !== 'configured') return;
+  try {
+    decoder.decode(new EncodedVideoChunk({
+      type: t === 5 ? 'key' : 'delta',
+      timestamp: performance.now() * 1000,   // µs; real time → no buffering delay
+      data: toAvcc(raw),
+    }));
+  } catch(e) { console.warn('[decode]', e); }
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket — auto-reconnect, URL derived from current page path
+// ---------------------------------------------------------------------------
+// Module-level watchdog so openDecoder's output callback can reset it.
+let _watchdog = null;
+function resetWatchdog() {
+  clearTimeout(_watchdog);
+  _watchdog = setTimeout(() => {
+    console.warn('[watchdog] no frames for 10s, reconnecting');
+    if (_activeWs) _activeWs.close();
+  }, 10000);
+}
+let _activeWs = null;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/droidctrl/ws`);
+  ws.binaryType = 'arraybuffer';
+  _activeWs = ws;
+  stattext.textContent = 'connecting…';
+  const push = makeNalSplitter(handleNal);
+
+  ws.onopen  = () => {
+    stattext.textContent = 'connected — waiting for stream…';
+    streaminfo.textContent = '';
+    spsRaw = null; ppsRaw = null;
+    statFpsBuf = []; statBwBuf = []; statTickFps = 0; statTickBw = 0;
+    closeDecoder();
+    resetWatchdog();
+  };
+  ws.onmessage = e => {
+    if (typeof e.data === 'string') {
+      try {
+        const m = JSON.parse(e.data);
+        if (m.settings?.bitrate) bitsel.value = m.settings.bitrate;
+        if (m.toggles)  applyToggleStates(m.toggles);
+        if (m.buttons)  loadButtons();
+      } catch {}
+      return;
+    }
+    statTickBw += e.data.byteLength;
+    push(new Uint8Array(e.data));
+  };
+  ws.onclose = () => { closeDecoder(); stattext.textContent = 'reconnecting…'; setTimeout(connect, 1000); };
+  ws.onerror = e => console.error('[ws]', e);
+}
+
+if (!('VideoDecoder' in window)) {
+  stattext.textContent = 'WebCodecs not supported — requires Chrome 94+ or Edge 94+';
+} else {
+  connect();
+}
+
+// ---------------------------------------------------------------------------
+// Input: tap (click) and scroll (wheel → swipe)
+// ---------------------------------------------------------------------------
+
+function phoneCoords(clientX, clientY) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: Math.round((clientX - r.left) * (canvas.width  / r.width)),
+    y: Math.round((clientY - r.top)  * (canvas.height / r.height)),
+  };
+}
+
+// Tap (short click) and drag (mousedown → move → mouseup).
+let downAt = null, downPhone = null, downTime = null;
+canvas.addEventListener('mousedown', e => {
+  downAt    = {x: e.clientX, y: e.clientY};
+  downPhone = phoneCoords(e.clientX, e.clientY);
+  downTime  = performance.now();
+});
+canvas.addEventListener('mouseup', e => {
+  if (!downAt) return;
+  const dx = e.clientX - downAt.x, dy = e.clientY - downAt.y;
+  const start = downPhone;
+  downAt = downPhone = null;
+  const dist = Math.hypot(dx, dy);
+  if (dist <= 8) {
+    // tap
+    const {x, y} = phoneCoords(e.clientX, e.clientY);
+    fetch(`/droidctrl/tap?x=${x}&y=${y}`).catch(() => {});
+  } else {
+    // drag
+    const end = phoneCoords(e.clientX, e.clientY);
+    // Use actual elapsed time so fast flicks produce fast swipes (needed for
+    // velocity-based gestures like dismissing apps in the recents screen).
+    const dur = Math.round(Math.max(30, Math.min(performance.now() - downTime, 600)));
+    fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${end.x}&y2=${end.y}&duration=${dur}`).catch(() => {});
+  }
+});
+canvas.addEventListener('mouseleave', () => { downAt = downPhone = null; });
+
+// Touch tap (single finger, no drag).
+let touchStart = null;
+canvas.addEventListener('touchstart', e => {
+  if (e.touches.length !== 1) return;
+  touchStart = {x: e.touches[0].clientX, y: e.touches[0].clientY};
+}, {passive: true});
+canvas.addEventListener('touchend', e => {
+  if (!touchStart || e.changedTouches.length !== 1) { touchStart = null; return; }
+  const t = e.changedTouches[0];
+  const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
+  touchStart = null;
+  if (Math.hypot(dx, dy) > 12) return;
+  const {x, y} = phoneCoords(t.clientX, t.clientY);
+  fetch(`/droidctrl/tap?x=${x}&y=${y}`).catch(() => {});
+}, {passive: true});
+
+// ---------------------------------------------------------------------------
+// Keyboard — printable ASCII only
+// ---------------------------------------------------------------------------
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.ctrlKey || e.metaKey) return;
+  if (e.key.length !== 1) return;
+  e.preventDefault();
+  fetch(`/droidctrl/key?text=${encodeURIComponent(e.key)}`).catch(() => {});
+});
+
+// Wheel → swipe. Debounce: collect events for 80ms then send one swipe.
+let wsa = 0, wlx = 540, wly = 1200, wTimer = null;
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  if (r.width > 0 && r.height > 0) {
+    wlx = Math.round((e.clientX - r.left) / r.width  * canvas.width);
+    wly = Math.round((e.clientY - r.top)  / r.height * canvas.height);
+  }
+  wsa += e.deltaY;
+  clearTimeout(wTimer);
+  wTimer = setTimeout(() => {
+    if (wsa === 0) return;
+    const dir    = wsa > 0 ? 'up' : 'down';
+    const amount = Math.min(Math.abs(wsa) * 3, 1200);
+    fetch(`/droidctrl/swipe?dir=${dir}&amount=${amount}&x=${wlx}&y=${wly}`).catch(() => {});
+    wsa = 0;
+  }, 80);
+}, {passive: false});
+  </script>
+</body>
+</html>
