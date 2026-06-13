@@ -1,3 +1,9 @@
+# Native H.264 → WebCodecs streaming stack.
+# Streams Android screen directly to the browser; no Xvfb/x11vnc/noVNC.
+#
+# Start:  docker compose up -d
+# Stop:   docker compose down
+
 name: droidctrl
 services:
   scrcpy:
@@ -8,23 +14,19 @@ services:
     stop_grace_period: 15s
     privileged: true
     ports:
-      - "${NOVNC_PORT:-6080}:6080"
+      - "${PORT:-6080}:6080"
     environment:
       - TZ=${TZ:-UTC}
-      - NOVNC_HOST=${NOVNC_HOST:-}
-      - NOVNC_PORT=${NOVNC_PORT:-6080}
-      - SCREEN_W=${SCREEN_WIDTH:-1080}
-      - SCREEN_H=${SCREEN_HEIGHT:-2400}
-      - SCREEN_RES=${SCREEN_WIDTH:-1080}x${SCREEN_HEIGHT:-2400}x24
       - USB_RESET_VID=${USB_RESET_VID:-18d1}
       - REVERSE_TETHER=${REVERSE_TETHER:-false}
+      - BIT_RATE=${BIT_RATE:-8M}
+      - SCREEN_W=${SCREEN_WIDTH:-0}
+      - SCREEN_H=${SCREEN_HEIGHT:-0}
     volumes:
       - /dev/bus/usb:/dev/bus/usb
       - ./data:/data
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
-      # Custom favicon set (replaces the stock noVNC icons).
-      - ./favicons:/usr/share/novnc/app/images/icons:ro
 
   # Optional — requires the automator repo cloned into ./automator.
   # Enable with: docker compose --profile automator up
@@ -43,7 +45,12 @@ services:
     volumes:
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
-      # Bind-mount source so `docker compose restart automator` picks up
-      # edits without rebuilding the image.
       - ./automator/automator.py:/automator.py:ro
       - ./automator/gem.py:/gem.py:ro
+      - ./automator/backup.py:/backup.py:ro
+      - ${BACKUP_DIR:-/tmp/automator-backup}:/backup
+
+networks:
+  default:
+    name: default_bridge
+    external: true

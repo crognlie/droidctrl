@@ -1,66 +1,28 @@
-# Example Caddy config for exposing droidctrl over HTTPS at /droidctrl/.
+# Caddy reverse-proxy config for droidctrl over HTTPS.
 #
-# HTTPS is required — Chrome (and most browsers) refuse
-# navigator.clipboard.writeText() in non-secure contexts, which means
-# the phone-to-host-clipboard sync silently fails over plain HTTP.
+# The droidctrl container must share a Docker network with Caddy so that
+# `droidctrl:6080` resolves. See compose.override.yml / compose.yml for the
+# network setup (default_bridge).
 #
-# Pick any URL prefix you like — this example uses /droidctrl/. If you
-# change it, update ALL occurrences below (both in the Caddyfile and in
-# the inline wrapper JS, which references /droidctrl/clipboard,
-# /droidctrl/swipe, and /droidctrl/websockify as absolute paths).
-#
-# The droidctrl container must share a Docker network with the Caddy
-# container so `droidctrl:6080` (noVNC) and `droidctrl:6081` (Flask)
-# resolve. See droidctrl's compose.override.yml example.
+# URL prefix /droidctrl/ is used throughout. Change it consistently here and
+# in any bookmarks; the container itself is prefix-agnostic.
 
 yourhost.example.com {
-	tls /path/to/cert.pem /path/to/key.pem
+    tls /path/to/cert.pem /path/to/key.pem
 
-	# Clean URL: /droidctrl -> /droidctrl/
-	@droidctrl_bare path /droidctrl
-	redir @droidctrl_bare /droidctrl/
+    # Redirect bare /droidctrl to /droidctrl/
+    @droidctrl_bare path /droidctrl
+    redir @droidctrl_bare /droidctrl/
 
-	# The wrapper page: an iframe hosting noVNC, plus JS that drives
-	# clipboard polling and mouse-wheel → touch-swipe translation. The
-	# file itself lives in the droidctrl repo at web/index.html — bind
-	# mount that directory into the caddy container (see example below)
-	# and Caddy serves it as a static file. Served as a top-level page
-	# (not inside the noVNC iframe) so it can:
-	#   - call navigator.clipboard.writeText() with a secure context
-	#   - reach into the iframe's DOM (same origin) to read the
-	#     noVNC_clipboard_text textarea and attach wheel listeners on
-	#     noVNC's canvas
-	#
-	# Requires a bind mount in the caddy service, e.g.:
-	#     volumes:
-	#       - /path/to/droidctrl/web:/srv/droidctrl:ro
-	@droidctrl_index path /droidctrl/
-	handle @droidctrl_index {
-		root * /srv/droidctrl
-		rewrite * /index.html
-		file_server
-	}
+    # Wheel-scroll swipe endpoint — routed to the sidecar port so it is
+    # handled even while the main stream port is busy with video data.
+    handle /droidctrl/swipe {
+        rewrite * /swipe
+        reverse_proxy droidctrl:6081
+    }
 
-	# Phone clipboard → browser: Flask reads Xvfb CLIPBOARD via xclip.
-	handle /droidctrl/clipboard {
-		rewrite * /clipboard
-		reverse_proxy droidctrl:6081
-	}
-
-	# Wheel event → touch swipe: Flask runs `adb shell input swipe`.
-	handle /droidctrl/swipe {
-		rewrite * /swipe
-		reverse_proxy droidctrl:6081
-	}
-
-	# Everything else under /droidctrl/* (noVNC static files + WebSocket)
-	# goes to the noVNC server. handle_path strips the prefix.
-	handle_path /droidctrl/* {
-		reverse_proxy droidctrl:6080
-	}
+    # Everything else: player page, WebSocket stream, tap/drag/key endpoints.
+    handle_path /droidctrl/* {
+        reverse_proxy droidctrl:6080
+    }
 }
-
-# The wrapper JS hardcodes phone screen dimensions as 1080x2400 — if your
-# device is a different resolution, edit the two occurrences in the
-# wheel-handler inside web/index.html (*1080 and *2400) to match what you
-# set as SCREEN_WIDTH / SCREEN_HEIGHT in droidctrl's .env.

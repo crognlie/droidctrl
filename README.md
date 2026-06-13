@@ -1,45 +1,35 @@
 # droidctrl
 
 Browser-accessible remote control of an Android phone plugged into a Linux
-host over USB. Stream the phone's screen to any browser, click and type with
-your mouse and keyboard, sync clipboards, and scroll with the mouse wheel
-(even in apps that only handle touch gestures, like Unity games).
+host over USB. Streams the phone's screen to any browser tab in real time,
+with tap, drag, scroll, and keyboard input forwarded back to the phone.
 
-Built on top of [scrcpy](https://github.com/Genymobile/scrcpy), wrapped in a
-small Docker stack that runs scrcpy into an `Xvfb` virtual display, exposes it
-via `x11vnc` + `noVNC`, and layers a tiny Flask service for clipboard + wheel →
-touch-swipe conversion.
-
-## What it's for
-
-- Using a phone from another room / another machine (home server setup).
-- Remote control of a phone you can't physically reach (travel, lab bench).
-- Scripted automation of phone-side tasks (see optional `automator` profile).
-
-## Architecture
+## How it works
 
 ```
-[browser] <--https--> [caddy (optional)] <--http/ws--> [droidctrl]
-                                                              ├─ Xvfb :1
-                                                              ├─ x11vnc  :5900
-                                                              ├─ noVNC   :6080
-                                                              ├─ Flask   :6081  (/clipboard, /swipe)
-                                                              └─ scrcpy --> ADB --> [USB] --> [phone]
+[phone] --USB-ADB--> [droidctrl container]
+                          |  adb shell screenrecord (H.264)
+                          |  stream_server.py (aiohttp)
+                          |      :6080  player page + WebSocket stream
+                          |      :6081  swipe / key endpoints
+                          |
+                     [Caddy] --HTTPS--> [browser]
+                                            WebCodecs VideoDecoder (hardware H.264)
 ```
 
-The browser talks noVNC (WebSocket) for the pixel stream and HTTP for
-clipboard/scroll — the clipboard/scroll JS lives in the Caddy-served iframe
-wrapper.
+The phone's display is captured with `adb shell screenrecord --output-format=h264`
+and streamed as raw Annex-B H.264 over a WebSocket. The browser decodes it in
+hardware using the [WebCodecs API](https://developer.mozilla.org/en-US/docs/Web/API/WebCodecs_API).
+No Xvfb, x11vnc, websockify, or noVNC involved.
 
 ## Requirements
 
 - Linux host with Docker + Docker Compose v2.
-- An Android phone with USB debugging enabled and already authorized for the
-  host's ADB key (run `adb devices` on the host once and accept the prompt
-  on the phone).
+- Android phone with USB debugging enabled and already authorized (`adb devices`
+  on the host once, accept the prompt on the phone).
 - USB cable capable of data (not just charging).
-- Optional: a reverse proxy (Caddy example in repo) if you want HTTPS / a
-  friendly URL instead of `host:6080`.
+- Chrome 94+ or Edge 94+ in the browser (WebCodecs API required).
+- Optional: Caddy or another reverse proxy for HTTPS and a friendly URL.
 
 ## Setup
 
@@ -48,119 +38,114 @@ git clone <this-repo> droidctrl
 cd droidctrl
 
 cp .env.example .env
-$EDITOR .env       # fill in NOVNC_HOST, ADB_KEY_DIR, SCREEN_WIDTH, SCREEN_HEIGHT
+$EDITOR .env   # set ADB_KEY_DIR, SCREEN_WIDTH, SCREEN_HEIGHT at minimum
 
-# Plug phone in, confirm host can see it:
-adb devices        # should list your device as "device"
+# Confirm host can see phone over USB:
+adb devices    # should list your device as "device"
 
 docker compose up -d
 ```
 
-Open the URL printed by `docker compose logs scrcpy | grep Ready`, e.g.
-`http://your-host:6080/vnc.html?autoconnect=true&resize=scale`.
+Open `http://your-host:6080/` (or your Caddy URL) in Chrome.
 
-### Behind Caddy — HTTPS is required
+## Behind Caddy
 
-**Chrome refuses `navigator.clipboard.writeText()` in non-secure contexts.**
-Over plain HTTP at a non-localhost URL, the phone → host-clipboard sync
-silently fails. You must terminate TLS somewhere in front of droidctrl.
-
-The wrapper page's HTML + JS lives in this repo at
-[`web/index.html`](web/index.html) — bind-mount that directory into your
-Caddy container (`- /path/to/droidctrl/web:/srv/droidctrl:ro`) and Caddy
-serves it as a static file. A full working Caddyfile block is in
-[`examples/Caddyfile.example`](examples/Caddyfile.example). Skeleton:
+A full working Caddyfile block is in [`examples/Caddyfile.example`](examples/Caddyfile.example).
+Skeleton:
 
 ```caddyfile
 yourhost.example.com {
     tls /path/to/cert.pem /path/to/key.pem
 
-    # Normalize to trailing slash
     @droidctrl_bare path /droidctrl
     redir @droidctrl_bare /droidctrl/
 
-    # Wrapper page (static file from the droidctrl repo's web/ dir)
-    @droidctrl_index path /droidctrl/
-    handle @droidctrl_index {
-        root * /srv/droidctrl
-        rewrite * /index.html
-        file_server
+    # Swipe endpoint served on the sidecar port
+    handle /droidctrl/swipe {
+        rewrite * /swipe
+        reverse_proxy droidctrl:6081
     }
 
-    # Flask endpoints on port 6081
-    handle /droidctrl/clipboard { rewrite * /clipboard; reverse_proxy droidctrl:6081 }
-    handle /droidctrl/swipe     { rewrite * /swipe;     reverse_proxy droidctrl:6081 }
-
-    # noVNC static assets + WebSocket on port 6080
-    handle_path /droidctrl/* { reverse_proxy droidctrl:6080 }
+    # Everything else: player page, WebSocket stream, all other endpoints
+    handle_path /droidctrl/* {
+        reverse_proxy droidctrl:6080
+    }
 }
 ```
 
-Why the wrapper JS lives at the top level (not inside the iframe):
-
-- `navigator.clipboard.writeText()` needs a secure-context *user gesture* —
-  so the listener that calls it must run on the page that has focus, which
-  is the top document.
-- The JS reaches into the iframe's DOM (same origin) to populate noVNC's
-  clipboard textarea and attach wheel listeners on its canvas.
-
-Both containers (Caddy and droidctrl) must share a Docker network so
-`droidctrl:6080` and `droidctrl:6081` resolve. If you already run Caddy on an
-external network, add `compose.override.yml` in droidctrl's directory
-(see [Customization](#customization)).
-
-URL prefix `/droidctrl/` is arbitrary — pick anything, but keep it consistent
-through all four handlers *and* the absolute paths in the inline JS.
+Both containers must share a Docker network so `droidctrl:6080/6081` resolves.
+See [`compose.override.yml`](compose.override.yml) for the network configuration
+and [`compose.yml`](compose.yml) for the `default_bridge` external network reference.
 
 ## Configuration (`.env`)
 
 | Variable | Meaning | Default |
-|----------|---------|---------|
-| `NOVNC_HOST` | Hostname shown in the startup URL | `localhost` |
+|---|---|---|
 | `TZ` | Container timezone | `UTC` |
 | `ADB_KEY_DIR` | Host path containing `adbkey` + `adbkey.pub` | `$HOME/.android` |
-| `SCREEN_WIDTH` | Phone screen width in pixels | `1080` |
+| `SCREEN_WIDTH` | Phone screen width in pixels (`adb shell wm size`) | `1080` |
 | `SCREEN_HEIGHT` | Phone screen height in pixels | `2400` |
-| `NOVNC_PORT` | Host-side port to expose noVNC on | `6080` |
-| `REVERSE_TETHER` | Route phone internet through the container via USB (see below) | `false` |
-| `USB_RESET_VID` | USB vendor ID to reset on wedge (hex, no `0x`) | `18d1` (Google) |
+| `PORT` | Host-side port to expose the player on | `6080` |
+| `USB_RESET_VID` | USB vendor ID for wedge recovery (hex, no `0x`). `18d1` = Google Pixel | `18d1` |
+| `REVERSE_TETHER` | Route phone internet through the container via gnirehtet | `false` |
+| `BIT_RATE` | Screenrecord bitrate ceiling (e.g. `4M`, `8M`, `16M`) | `8M` |
 
-Find your phone's resolution with: `adb shell wm size`.
+The player UI also has a live **max bitrate** dropdown — changes apply immediately
+and survive container restarts (saved in `./data/stream_settings.json`).
 
 ## Features
 
-- **Video stream**: 60fps, 8Mbps H.264, scales to browser window.
-- **Phone screen stays off** while you control it (via scrcpy's
-  `--turn-screen-off`), so you don't leak battery or visibly announce that the
-  phone is being used.
-- **Stays awake on USB**: `svc power stayon usb` is set at startup so sleep
-  can't drop the connection.
-- **Clipboard sync**: copy on the phone → poll picks up the Xvfb clipboard →
-  posts to the noVNC panel and (on your next click in the window) writes it
-  to your browser's clipboard.
-- **Mouse wheel → touch swipe**: wheel events are intercepted in JS and
-  converted to ADB touch swipes starting at your cursor's phone coordinate.
-  Works in apps that ignore Android's `ACTION_SCROLL` (Unity games, etc.)
-  and in partial-height scrollable panels.
-- **Auto-reconnect**: when the phone disconnects, scrcpy exits cleanly and
-  the container waits indefinitely for it to come back. Each retry attempt
-  issues a `USBDEVFS_RESET` on the phone's USB device to clear wedged bulk
-  endpoints before restarting the ADB server.
-- **Reverse tethering** (opt-in): set `REVERSE_TETHER=true` in `.env` to
-  route the phone's internet traffic through the container via USB using
-  [gnirehtet](https://github.com/Genymobile/gnirehtet). No WiFi needed on
-  the phone; the relay runs inside the container and reinitialises on every
-  reconnect. See [Reverse tethering](#reverse-tethering) below.
+- **Native H.264 decode** — hardware-accelerated in the browser via WebCodecs.
+  No server-side decode or re-encode; the phone's hardware encoder does the work.
+- **Live stats** — fps and bandwidth in the status bar with 8-second rolling average,
+  plus native → display resolution and codec string.
+- **Mouse input** — click to tap, click-drag to swipe (duration matches your drag
+  speed, so fast flicks register as flings on the phone), scroll wheel to scroll.
+- **Keyboard input** — printable ASCII characters forwarded via `adb shell input text`.
+- **Navigation bar** — Home (○) and Recent apps (□) buttons in a sidebar to the
+  right of the screen. Automators can add custom buttons and toggles; see
+  [Sidebar API](#sidebar-api--automator-hook).
+- **Stays awake on USB** — `svc power stayon usb` is set at startup.
+- **Auto-reconnect** — if the phone disconnects, the container waits and retries
+  with USB wedge recovery (`USBDEVFS_RESET` + ADB server restart).
+- **Reverse tethering** (opt-in) — routes phone internet through the container
+  via [gnirehtet](https://github.com/Genymobile/gnirehtet).
+
+## Sidebar API / Automator hook
+
+The player page has a sidebar with Android navigation buttons. Automator
+containers running alongside droidctrl can add their own buttons and
+stateful toggles to this sidebar via HTTP.
+
+See **[`docs/sidebar-api.md`](docs/sidebar-api.md)** for the full API reference.
+
+Quick example — register a toggle from Python:
+
+```python
+import requests
+
+BASE = "http://droidctrl:6080"
+
+requests.get(f"{BASE}/toggle/register", params={
+    "id":       "gem_mode",
+    "tooltip":  "Gem collection on/off",
+    "state":    "true",
+    "callback": "http://my-automator:8080/on-toggle",
+})
+```
+
+The toggle appears in the browser immediately. Clicking it POSTs
+`{"id": "gem_mode", "state": false}` to the callback URL.
 
 ## Automation (optional)
 
 Sidecar containers can poll the phone's screen and fire taps — useful for
 recurring in-app actions (e.g., clicking "claim" when a reward shows up).
 
-[`droidctrl-automator`](https://github.com/crognlie/droidctrl-automator) is the reference implementation;
-it's an OCR-based autoclicker for The Tower.
+[`droidctrl-automator`](https://github.com/crognlie/droidctrl-automator) is the
+reference implementation (OCR-based autoclicker for The Tower).
 
-### Single automator (convenient shortcut)
+### Single automator (profile shortcut)
 
 Clone into `./automator/` and start with the profile:
 
@@ -169,126 +154,37 @@ git clone https://github.com/crognlie/droidctrl-automator automator
 docker compose --profile automator up -d
 ```
 
-### Multiple automators (or a cleaner separation)
+### Multiple automators
 
-Each automator is its own compose project — just clone to a sibling
-directory and `docker compose up`. Each one joins
-`droidctrl_default` and reaches ADB at `tcp:droidctrl:5037`.
-
-```bash
-# Layout:
-~/code/
-├── droidctrl/      # scrcpy + noVNC, this repo
-├── tower-automator/      # claim gems + retry in The Tower
-└── other-automator/      # something else — same pattern
-
-cd ~/code/tower-automator && docker compose up -d
-cd ~/code/other-automator && docker compose up -d
-```
-
-They each have their own `.env` (own `POLL_INTERVAL`, `TARGETS`, etc.) and
-their own lifecycle. Note that multiple automators tapping the same phone
-at overlapping times can collide — stagger `POLL_INTERVAL` values if you
-hit this.
-
-## Updates and restarts
-
-Automators can be rebuilt and restarted independently — scrcpy stays up.
-
-```bash
-# Subfolder/profile mode: rebuild + restart only automator
-docker compose up -d --build automator
-
-# Or just restart the container without a rebuild:
-docker compose restart automator
-
-# Standalone mode: from inside the automator repo's directory
-cd ~/code/tower-automator
-docker compose up -d --build        # or: docker compose restart
-```
-
-Naming the service explicitly means Compose touches only that container.
-`depends_on: scrcpy` just checks the scrcpy container is alive; it won't
-recreate it. Python-only edits rebuild in sub-seconds thanks to Docker
-layer caching.
-
-## Customization
-
-- Want a different network (e.g., to share one with a reverse-proxy
-  container)? Create `compose.override.yml`:
-  ```yaml
-  networks:
-    default:
-      name: your_network
-      external: true
-  ```
-  `compose.override.yml` is gitignored.
-- Want to pin a different scrcpy version? Edit `ARG SCRCPY_VERSION=` in the
-  `Dockerfile`, or override at build: `docker compose build
-  --build-arg SCRCPY_VERSION=v3.4.0`.
+Each is its own compose project. Clone to a sibling directory, set
+`ADB_SERVER_SOCKET=tcp:droidctrl:5037` in its environment, and
+`docker compose up`. All join `default_bridge` and share the ADB server.
 
 ## Reverse tethering
 
-Set `REVERSE_TETHER=true` in `.env` and restart to give the phone internet
-through the USB connection instead of (or in addition to) its own WiFi.
+Set `REVERSE_TETHER=true` in `.env` and restart to route the phone's internet
+through the USB connection.
 
-```bash
-# .env
-REVERSE_TETHER=true
-```
+On first run the phone shows a VPN permission dialog — tap **OK**. Subsequent
+connects are silent. Disable by setting `REVERSE_TETHER=false` and restarting.
 
-How it works: [gnirehtet](https://github.com/Genymobile/gnirehtet) installs a
-small APK on the phone and starts a relay inside the container. All phone
-traffic tunnels over ADB to the relay, which forwards it through the
-container's network interface. The phone occupies its system VPN slot while
-tethering is active.
-
-**First run**: the phone will show a VPN permission dialog — tap **OK**. After
-that, authorization is remembered and future connects are silent.
-
-**To check which path the phone is using:**
-
-```bash
-docker exec droidctrl adb shell ip route show
-```
-
-- Reverse tether active: `default via 10.0.2.2 dev tun0`
-- WiFi only: route via `wlan0`, no `tun0` default
-
-**Conflict**: gnirehtet uses Android's built-in VPN slot. It will be
-incompatible with other always-on VPN apps running on the phone at the same
-time. Set `REVERSE_TETHER=false` and restart to disable.
+Verify: `docker exec droidctrl adb shell ip route show` — look for `default via 10.0.2.2 dev tun0`.
 
 ## Troubleshooting
 
-- **noVNC stuck at "Connecting"**: check `docker logs droidctrl` for
-  `EGL not initialized` or a stale `/tmp/.X1-lock`. The container recreates
-  should handle this, but if you hit it, `docker compose restart`.
-- **ADB in the container loops reconnecting** ("read failed: Success",
-  "write terminated: Connection timed out"): the container automatically
-  issues a `USBDEVFS_RESET` and restarts the ADB server on each retry, so
-  most wedge conditions clear themselves when you replug. If it stays stuck,
-  reset the USB port manually via sysfs:
-  `echo 0 > /sys/bus/usb/devices/<bus>-<port>/authorized`, then `echo 1`.
-- **Phone not detected after host reboot**: the container recovers
-  automatically once the phone re-enumerates on USB — no restart needed.
-  If it stays stuck, replug the cable; Android sometimes reverts to
-  charging-only mode after a host reboot and needs a replug to re-expose
-  the ADB interface.
-- **Scroll wheel does nothing in-app**: confirm scroll works in Android's
-  launcher or Settings first — if it works there but not in your app, the
-  app is swallowing swipe at that screen region; try scrolling while
-  hovering a different part of the scrollable panel.
-- **Clipboard isn't writing to the host's browser clipboard**: Chrome needs
-  a user gesture. Copy on phone → click once inside the VNC window → next
-  poll will push to the host clipboard.
+- **"connected — waiting for stream…" never clears**: confirm Chrome 94+ is
+  being used (WebCodecs not supported in older browsers or Firefox).
+- **ADB reconnect loop in logs**: the container automatically issues
+  `USBDEVFS_RESET` and restarts ADB on each retry. If it stays stuck, replug
+  the cable; Android sometimes reverts to charging-only mode after a host reboot.
+- **Phone not detected after host reboot**: the container recovers automatically
+  once the phone re-enumerates. Replug the cable if it stays offline.
+- **Scroll wheel not working**: the scroll wheel sends `adb shell input swipe`
+  via port 6081. Confirm the Caddy `handle /droidctrl/swipe` block is present
+  and pointing at `droidctrl:6081`.
 
-## Security notes
+## Security
 
-- The container runs `privileged: true` with `/dev/bus/usb` passthrough —
-  needed for ADB over USB. Treat the host as if anything on it can reach
-  the phone.
-- `x11vnc` runs with `-nopw` (no VNC password) on the internal network
-  only — the container binds VNC to localhost inside the container, so
-  external access comes via noVNC HTTP, not raw VNC. Still: don't expose
-  port 6080 publicly without a reverse proxy + auth in front of it.
+The container runs `privileged: true` with `/dev/bus/usb` passthrough — required
+for ADB over USB. Treat the host as if anything on it can reach the phone. Do not
+expose port 6080 publicly without a reverse proxy and authentication in front of it.
