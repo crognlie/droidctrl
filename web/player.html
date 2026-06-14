@@ -15,11 +15,12 @@
     html, body { height: 100%; background: #000; overflow: hidden; }
     body { display: flex; flex-direction: column; }
     #status {
-      flex-shrink: 0;
+      flex-shrink: 0; position: relative;
       display: flex; align-items: center; justify-content: space-between;
       color: #aaa; font: 11px/1.6 monospace;
       background: #111; padding: 2px 8px; gap: 12px;
     }
+    #version { position: absolute; left: 50%; transform: translateX(-50%); color: #444; pointer-events: none; }
     #stattext { flex: 1; white-space: nowrap; overflow: hidden; }
     #bwctl, #resctl { white-space: nowrap; flex-shrink: 0; }
     #auto-label { color: #7a7; font-size: 10px; }
@@ -29,12 +30,12 @@
     }
     #viewport {
       flex: 1; min-height: 0;
-      display: flex; flex-direction: row; align-items: center;
+      display: flex; flex-direction: row;
       overflow: hidden;
     }
-    #left-margin  { flex: 1; }
-    canvas        { flex: 0 1 auto; max-height: 100%; cursor: crosshair; }
-    #right-margin { flex: 1; min-width: 64px; display: flex; justify-content: center; align-items: center; }
+    #canvas-area  { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    canvas        { cursor: crosshair; }
+    #right-margin { flex-shrink: 0; width: 64px; display: flex; justify-content: center; align-items: center; }
     #sidebar {
       display: flex; flex-direction: column; align-items: center;
       gap: 16px;
@@ -121,6 +122,7 @@
 <body>
   <div id="status">
     <span id="stattext">connecting…</span>
+    <span id="version">v5</span>
     <span id="cursorinfo"></span>
     <span id="streaminfo"></span>
     <span id="bwctl">bitrate <select id="bitsel">
@@ -137,8 +139,9 @@
     </select></span>
   </div>
   <div id="viewport">
-    <div id="left-margin"></div>
-    <canvas id="c"></canvas>
+    <div id="canvas-area">
+      <canvas id="c"></canvas>
+    </div>
     <div id="right-margin">
       <nav id="sidebar">
         <button class="nav-btn" data-kc="3" data-tip="Home">
@@ -174,8 +177,17 @@
   <script>
 'use strict';
 
-const canvas   = document.getElementById('c');
-const ctx      = canvas.getContext('2d');
+const canvas    = document.getElementById('c');
+const ctx       = canvas.getContext('2d');
+const canvasArea = document.getElementById('canvas-area');
+
+function fitCanvas() {
+  if (!canvas.width || !canvas.height) return;
+  const scale = Math.min(canvasArea.clientWidth / canvas.width, canvasArea.clientHeight / canvas.height);
+  canvas.style.width  = Math.round(canvas.width  * scale) + 'px';
+  canvas.style.height = Math.round(canvas.height * scale) + 'px';
+}
+window.addEventListener('resize', fitCanvas);
 const status   = document.getElementById('status');    // kept for any remaining refs
 const stattext = document.getElementById('stattext');
 const bitsel      = document.getElementById('bitsel');
@@ -565,6 +577,7 @@ function openDecoder(sps, pps) {
       const fw = frame.displayWidth, fh = frame.displayHeight;
       if (canvas.width !== fw || canvas.height !== fh) {
         canvas.width = fw; canvas.height = fh;
+        fitCanvas();
       }
       ctx.drawImage(frame, 0, 0);
       frame.close();
@@ -710,14 +723,19 @@ function phoneCoords(clientX, clientY) {
   };
 }
 
-// Cursor position display — phone coordinates shown in status bar.
+// Cursor position display.
 canvas.addEventListener('mousemove', e => {
   const {x, y} = phoneCoords(e.clientX, e.clientY);
   cursorinfo.textContent = `(${x}, ${y})`;
 });
-canvas.addEventListener('mouseleave', () => { cursorinfo.textContent = ''; });
+canvas.addEventListener('mouseleave', () => {
+  cursorinfo.textContent = '';
+  downAt = downPhone = null;
+});
 
-// Tap (short click) and drag (mousedown → move → mouseup).
+// Tap, drag, and long-press via mousedown → mouseup gesture collection.
+// Long-press: same-origin swipe with actual hold duration — Android's gesture
+// detector fires the long-press callback after ~500ms of stationary touch.
 let downAt = null, downPhone = null, downTime = null;
 canvas.addEventListener('mousedown', e => {
   downAt    = {x: e.clientX, y: e.clientY};
@@ -729,29 +747,32 @@ canvas.addEventListener('mouseup', e => {
   const dx = e.clientX - downAt.x, dy = e.clientY - downAt.y;
   const start = downPhone;
   downAt = downPhone = null;
-  const dist = Math.hypot(dx, dy);
+  const elapsed = Math.round(performance.now() - downTime);
+  const dist    = Math.hypot(dx, dy);
   if (dist <= 8) {
-    // tap
-    const {x, y} = phoneCoords(e.clientX, e.clientY);
-    fetch(`/droidctrl/tap?x=${x}&y=${y}`).catch(() => {});
+    if (elapsed < 500) {
+      // Quick tap
+      const {x, y} = phoneCoords(e.clientX, e.clientY);
+      fetch(`/droidctrl/tap?x=${x}&y=${y}`).catch(() => {});
+    } else {
+      // Long press: zero-movement swipe with actual hold duration
+      fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${start.x}&y2=${start.y}&duration=${elapsed}`).catch(() => {});
+    }
   } else {
-    // drag
+    // Drag
     const end = phoneCoords(e.clientX, e.clientY);
-    // Use actual elapsed time so fast flicks produce fast swipes (needed for
-    // velocity-based gestures like dismissing apps in the recents screen).
-    const dur = Math.round(Math.max(30, Math.min(performance.now() - downTime, 600)));
+    const dur = Math.round(Math.max(30, Math.min(elapsed, 600)));
     fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${end.x}&y2=${end.y}&duration=${dur}`).catch(() => {});
   }
 });
-canvas.addEventListener('mouseleave', () => { downAt = downPhone = null; });
 
-// Touch tap (single finger, no drag).
-let touchStart = null;
+// Touch tap (single finger, no drag) — for touchscreen browsers.
+let touchStart = null, touchDownTime = null;
 canvas.addEventListener('touchstart', e => {
   if (e.touches.length !== 1) return;
   e.preventDefault(); // prevents browser synthesizing mouse events → stops double-tap
   touchStart = phoneCoords(e.touches[0].clientX, e.touches[0].clientY);
-  downTime = performance.now();
+  touchDownTime = performance.now();
 }, {passive: false});
 canvas.addEventListener('touchend', e => {
   if (!touchStart || e.changedTouches.length !== 1) { touchStart = null; return; }
@@ -764,7 +785,7 @@ canvas.addEventListener('touchend', e => {
   if (Math.hypot(dx, dy) <= 30) {
     fetch(`/droidctrl/tap?x=${end.x}&y=${end.y}`).catch(() => {});
   } else {
-    const dur = Math.round(Math.max(30, Math.min(performance.now() - downTime, 600)));
+    const dur = Math.round(Math.max(30, Math.min(performance.now() - touchDownTime, 600)));
     fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${end.x}&y2=${end.y}&duration=${dur}`).catch(() => {});
   }
 }, {passive: false});
