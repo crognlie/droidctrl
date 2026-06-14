@@ -15,7 +15,7 @@
     html, body { height: 100%; background: #000; overflow: hidden; }
     body { display: flex; flex-direction: column; }
     #status {
-      flex-shrink: 0;
+      flex-shrink: 0; position: relative;
       display: flex; align-items: center; justify-content: space-between;
       color: #aaa; font: 11px/1.6 monospace;
       background: #111; padding: 2px 8px; gap: 12px;
@@ -29,12 +29,12 @@
     }
     #viewport {
       flex: 1; min-height: 0;
-      display: flex; flex-direction: row; align-items: center;
+      display: flex; flex-direction: row;
       overflow: hidden;
     }
-    #left-margin  { flex: 1; }
-    canvas        { flex: 0 1 auto; max-height: 100%; cursor: crosshair; }
-    #right-margin { flex: 1; min-width: 64px; display: flex; justify-content: center; align-items: center; }
+    #canvas-area  { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    canvas        { cursor: crosshair; }
+    #right-margin { flex-shrink: 0; width: 64px; display: flex; justify-content: center; align-items: center; }
     #sidebar {
       display: flex; flex-direction: column; align-items: center;
       gap: 16px;
@@ -137,8 +137,9 @@
     </select></span>
   </div>
   <div id="viewport">
-    <div id="left-margin"></div>
-    <canvas id="c"></canvas>
+    <div id="canvas-area">
+      <canvas id="c"></canvas>
+    </div>
     <div id="right-margin">
       <nav id="sidebar">
         <button class="nav-btn" data-kc="3" data-tip="Home">
@@ -174,8 +175,17 @@
   <script>
 'use strict';
 
-const canvas   = document.getElementById('c');
-const ctx      = canvas.getContext('2d');
+const canvas    = document.getElementById('c');
+const ctx       = canvas.getContext('2d');
+const canvasArea = document.getElementById('canvas-area');
+
+function fitCanvas() {
+  if (!canvas.width || !canvas.height) return;
+  const scale = Math.min(canvasArea.clientWidth / canvas.width, canvasArea.clientHeight / canvas.height);
+  canvas.style.width  = Math.round(canvas.width  * scale) + 'px';
+  canvas.style.height = Math.round(canvas.height * scale) + 'px';
+}
+window.addEventListener('resize', fitCanvas);
 const status   = document.getElementById('status');    // kept for any remaining refs
 const stattext = document.getElementById('stattext');
 const bitsel      = document.getElementById('bitsel');
@@ -565,6 +575,7 @@ function openDecoder(sps, pps) {
       const fw = frame.displayWidth, fh = frame.displayHeight;
       if (canvas.width !== fw || canvas.height !== fh) {
         canvas.width = fw; canvas.height = fh;
+        fitCanvas();
       }
       ctx.drawImage(frame, 0, 0);
       frame.close();
