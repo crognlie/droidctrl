@@ -1,12 +1,19 @@
-# Native H.264 → WebCodecs streaming stack.
-# Streams Android screen directly to the browser; no Xvfb/x11vnc/noVNC.
+# droidctrl + automator sidecar — example compose.
+# Copy to compose.yml and customise for your host.
 #
-# Start:  docker compose up -d
-# Stop:   docker compose down
+# The automator section here is intentionally minimal. The automator is a
+# separate project with its own source, dependencies, and configuration.
+# Clone it into ./automator/ and refer to its README for the full list of
+# volumes, environment variables, and .env settings required.
+#
+#   https://github.com/crognlie/droidctrl-automator
+#
+# Start stream only:         docker compose up -d
+# Start stream + automator:  docker compose --profile automator up -d
 
 name: droidctrl
 services:
-  scrcpy:
+  stream:
     build: .
     container_name: droidctrl
     restart: unless-stopped
@@ -23,20 +30,20 @@ services:
       - SCREEN_W=${SCREEN_WIDTH:-0}
       - SCREEN_H=${SCREEN_HEIGHT:-0}
     volumes:
-      - /dev/bus/usb:/dev/bus/usb
+      - /dev/bus/usb:/dev/bus/usb  # Linux only; use ADB_TCP_DEVICE on macOS/Windows
       - ./data:/data
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
 
-  # Optional — requires the automator repo cloned into ./automator.
-  # Enable with: docker compose --profile automator up
+  # Automator sidecar — requires the automator repo cloned into ./automator/.
+  # See https://github.com/crognlie/droidctrl-automator for full setup.
   automator:
     profiles: ["automator"]
     build: ./automator
     container_name: droidctrl-automator
     restart: unless-stopped
     depends_on:
-      - scrcpy
+      - stream
     env_file:
       - path: ./automator/.env
         required: false
@@ -45,10 +52,7 @@ services:
     volumes:
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
       - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
-      - ./automator/automator.py:/automator.py:ro
-      - ./automator/gem.py:/gem.py:ro
-      - ./automator/backup.py:/backup.py:ro
-      - ${BACKUP_DIR:-/tmp/automator-backup}:/backup
+      # Additional volumes are automator-specific — see the automator repo's README.
 
 networks:
   default:

@@ -38,7 +38,11 @@ git clone <this-repo> droidctrl
 cd droidctrl
 
 cp .env.example .env
-$EDITOR .env   # set ADB_KEY_DIR, SCREEN_WIDTH, SCREEN_HEIGHT at minimum
+$EDITOR .env                          # set ADB_KEY_DIR and any other overrides
+
+# compose.yml is gitignored — copy the example and customise freely.
+# Use compose.automator.example.yml if you also want an automator sidecar.
+cp compose.example.yml compose.yml
 
 # Confirm host can see phone over USB:
 adb devices    # should list your device as "device"
@@ -117,25 +121,22 @@ The player page has a sidebar with Android navigation buttons. Automator
 containers running alongside droidctrl can add their own buttons and
 stateful toggles to this sidebar via HTTP.
 
-See **[`docs/sidebar-api.md`](docs/sidebar-api.md)** for the full API reference.
+See **[`docs/api.md`](docs/api.md)** for the full API reference.
 
-Quick example — register a toggle from Python:
+Quick example — register items from Python:
 
 ```python
 import requests
 
 BASE = "http://droidctrl:6080"
 
-requests.get(f"{BASE}/toggle/register", params={
-    "id":       "gem_mode",
-    "tooltip":  "Gem collection on/off",
-    "state":    "true",
-    "callback": "http://my-automator:8080/on-toggle",
+requests.get(f"{BASE}/item/register", params={
+    "id": "auto_action", "type": "toggle",
+    "desc": "Auto action on/off", "state": "true",
 })
 ```
 
-The toggle appears in the browser immediately. Clicking it POSTs
-`{"id": "gem_mode", "state": false}` to the callback URL.
+Items appear in the browser gear modal immediately.
 
 ## Automation (optional)
 
@@ -159,6 +160,29 @@ docker compose --profile automator up -d
 Each is its own compose project. Clone to a sibling directory, set
 `ADB_SERVER_SOCKET=tcp:droidctrl:5037` in its environment, and
 `docker compose up`. All join `default_bridge` and share the ADB server.
+
+## macOS and Windows
+
+USB passthrough (`/dev/bus/usb`) only works on **Linux** hosts. On macOS and Windows
+Docker Desktop runs in a VM that doesn't expose USB devices to containers.
+
+**Workaround — ADB over TCP/WiFi:**
+
+```bash
+# 1. On the phone (one time, while USB is connected to the host):
+adb tcpip 5555
+
+# 2. Find the phone's WiFi IP address, then add to .env:
+ADB_TCP_DEVICE=192.168.1.42:5555
+```
+
+With `ADB_TCP_DEVICE` set the container skips USB entirely and connects over the
+network. The phone and host must be on the same network (or reachable via VPN).
+
+**Architecture note:** The container image builds and runs on both `amd64` and `arm64`
+(Apple Silicon). The only feature that is `amd64`-only is reverse tethering
+(`REVERSE_TETHER=true`), which requires a gnirehtet binary that doesn't have an arm64
+release. All other features work on arm64.
 
 ## Reverse tethering
 

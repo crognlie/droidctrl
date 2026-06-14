@@ -1,0 +1,35 @@
+# droidctrl — stream-only example compose.
+# Copy to compose.yml and customise for your host.
+# See .env.example for all available environment variables.
+#
+# If you want to run an automator sidecar alongside droidctrl, see
+# compose.automator.example.yml instead.
+
+name: droidctrl
+services:
+  stream:
+    build: .
+    container_name: droidctrl
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 15s
+    privileged: true
+    ports:
+      - "${PORT:-6080}:6080"
+    environment:
+      - TZ=${TZ:-UTC}
+      - USB_RESET_VID=${USB_RESET_VID:-18d1}
+      - REVERSE_TETHER=${REVERSE_TETHER:-false}
+      - BIT_RATE=${BIT_RATE:-8M}
+      - SCREEN_W=${SCREEN_WIDTH:-0}
+      - SCREEN_H=${SCREEN_HEIGHT:-0}
+    volumes:
+      - /dev/bus/usb:/dev/bus/usb  # Linux only; use ADB_TCP_DEVICE on macOS/Windows
+      - ./data:/data
+      - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey:/root/.android/adbkey:ro
+      - ${ADB_KEY_DIR:-${HOME}/.android}/adbkey.pub:/root/.android/adbkey.pub:ro
+
+networks:
+  default:
+    name: default_bridge
+    external: true

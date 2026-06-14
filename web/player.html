@@ -21,8 +21,9 @@
       background: #111; padding: 2px 8px; gap: 12px;
     }
     #stattext { flex: 1; white-space: nowrap; overflow: hidden; }
-    #bwctl { white-space: nowrap; flex-shrink: 0; }
-    #bwctl select {
+    #bwctl, #resctl { white-space: nowrap; flex-shrink: 0; }
+    #auto-label { color: #7a7; font-size: 10px; }
+    #bwctl select, #resctl select {
       background: #222; color: #ccc; border: 1px solid #444;
       font: inherit; padding: 1px 2px; cursor: pointer; border-radius: 2px;
     }
@@ -50,6 +51,60 @@
       background: rgba(80,200,100,.2); border-color: rgba(80,200,100,.5); color: #7ded90;
     }
     .nav-btn.toggle-on:hover { background: rgba(80,200,100,.3); }
+    #sidebar hr { width: 28px; border: none; border-top: 1px solid rgba(255,255,255,.15); margin: 4px 0; }
+    /* Toggle modal */
+    #toggle-modal {
+      display: none; position: fixed; inset: 0; z-index: 200;
+      align-items: center; justify-content: center;
+      pointer-events: all;
+    }
+    #toggle-modal.open { display: flex; }
+    #toggle-modal-bg {
+      position: absolute; inset: 0; background: rgba(0,0,0,.25);
+    }
+    #toggle-modal-card {
+      position: relative; z-index: 1;
+      background: rgba(18,20,28,.92); border: 1px solid rgba(255,255,255,.18);
+      border-radius: 20px; padding: 28px 32px;
+      width: min(680px, 96vw); max-height: 90vh; overflow-y: auto;
+      backdrop-filter: blur(12px);
+    }
+    #toggle-modal-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 20px; color: #ccc; font: bold 22px/1 monospace;
+    }
+    #modal-close {
+      background: none; border: none; color: #888; cursor: pointer;
+      font-size: 32px; padding: 0 0 0 24px; line-height: 1;
+    }
+    #modal-close:hover { color: #fff; }
+    .modal-row {
+      display: flex; align-items: center; gap: 16px;
+      padding: 20px 0; border-bottom: 1px solid rgba(255,255,255,.07);
+    }
+    .modal-row:last-child { border-bottom: none; }
+    .modal-label { flex: 1; color: #ccc; font: 20px/1.4 monospace; }
+    .modal-btn {
+      padding: 16px 28px; border-radius: 10px; cursor: pointer;
+      font: 18px monospace; border: 1px solid rgba(255,255,255,.15);
+      background: rgba(255,255,255,.05); color: #666; min-width: 80px;
+    }
+    .modal-btn.is-on  { background: rgba(80,200,100,.22); border-color: rgba(80,200,100,.5); color: #7ded90; }
+    .modal-btn.is-off { background: rgba(200,80,80,.18);  border-color: rgba(200,80,80,.4);  color: #ed8888; }
+    .modal-value-input {
+      width: 90px; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.2);
+      border-radius: 10px; color: #ccc; font: 20px monospace; padding: 14px 10px;
+      text-align: center;
+    }
+    .modal-value-input:focus { outline: none; border-color: rgba(100,160,255,.6); }
+    .modal-btn-full { display: block; width: 100%; text-align: center; }
+    .modal-numeric-group { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+    .modal-step-btn {
+      padding: 16px 14px; border-radius: 8px; cursor: pointer;
+      font: 20px monospace; border: 1px solid rgba(255,255,255,.15);
+      background: rgba(255,255,255,.05); color: #888; line-height: 1;
+    }
+    .modal-step-btn:hover { background: rgba(255,255,255,.15); color: #ccc; }
     .nav-btn svg { width: 22px; height: 22px; }
     .nav-btn::after {
       content: attr(data-tip);
@@ -66,13 +121,19 @@
 <body>
   <div id="status">
     <span id="stattext">connecting…</span>
+    <span id="cursorinfo"></span>
     <span id="streaminfo"></span>
-    <span id="bwctl">max bitrate <select id="bitsel">
-      <option value="1M">1 Mb/s</option>
-      <option value="2M">2 Mb/s</option>
-      <option value="4M">4 Mb/s</option>
-      <option value="8M" selected>8 Mb/s</option>
-      <option value="16M">16 Mb/s</option>
+    <span id="bwctl">bitrate <select id="bitsel">
+      <option value="auto">Auto</option>
+      <option value="2000000">2 Mb/s</option>
+      <option value="4000000">4 Mb/s</option>
+      <option value="8000000" selected>8 Mb/s</option>
+      <option value="16000000">16 Mb/s</option>
+    </select> <span id="auto-label"></span></span>
+    <span id="resctl">res <select id="ressel">
+      <option value="full">Full</option>
+      <option value="half">½</option>
+      <option value="quarter">¼</option>
     </select></span>
   </div>
   <div id="viewport">
@@ -90,7 +151,24 @@
             <rect x="3" y="3" width="18" height="18" rx="3"/>
           </svg>
         </button>
+        <hr>
+        <button class="nav-btn" id="gear-btn" data-tip="Manage toggles">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
       </nav>
+    </div>
+  </div>
+  <div id="toggle-modal">
+    <div id="toggle-modal-bg"></div>
+    <div id="toggle-modal-card">
+      <div id="toggle-modal-header">
+        <span>Toggles</span>
+        <button id="modal-close">✕</button>
+      </div>
+      <div id="toggle-modal-list"></div>
     </div>
   </div>
   <script>
@@ -101,53 +179,221 @@ const ctx      = canvas.getContext('2d');
 const status   = document.getElementById('status');    // kept for any remaining refs
 const stattext = document.getElementById('stattext');
 const bitsel      = document.getElementById('bitsel');
+const ressel      = document.getElementById('ressel');
+const autoLabel   = document.getElementById('auto-label');
 const streaminfo  = document.getElementById('streaminfo');
-const sidebar     = document.getElementById('sidebar');
+const cursorinfo  = document.getElementById('cursorinfo');
 
-// Default SVG for server-registered toggles that don't supply their own icon.
-const TOGGLE_ICON = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-  <circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3
-    M4.9 4.9l2.1 2.1m9.9 9.9 2.1 2.1M4.9 19.1l2.1-2.1m9.9-9.9 2.1-2.1"/>
-</svg>`;
+// ---------------------------------------------------------------------------
+// Auto bitrate
+// ---------------------------------------------------------------------------
+const AUTO_MAX_BPS  = 8_000_000;
+const AUTO_MIN_BPS  = 2_000_000;  // hardware encoder floor ~2–3 Mb/s regardless of target
+const DOWN_FACTOR   = 3 / 4;
+const UP_FACTOR     = 4 / 3;
+const STABLE_NEEDED = 60_000;  // ms stable before stepping up
 
-function applyToggleStates(states) {
-  for (const [id, state] of Object.entries(states)) {
-    const btn = sidebar.querySelector(`[data-toggle-id="${CSS.escape(id)}"]`);
-    if (btn) btn.classList.toggle('toggle-on', !!state);
+const RES_OPTIONS = [
+  {value: 'full',    divisor: 1},
+  {value: 'half',    divisor: 2},
+  {value: 'quarter', divisor: 4},
+];
+
+let autoMode      = false;
+let autoBps       = AUTO_MAX_BPS;
+let autoStableMs  = 0;
+let autoTimer     = null;
+
+function parseBps(val) {
+  const v = String(val).trim().toUpperCase();
+  if (v.endsWith('M')) return parseFloat(v) * 1_000_000;
+  if (v.endsWith('K')) return parseFloat(v) * 1_000;
+  return parseFloat(v) || AUTO_MAX_BPS;
+}
+
+function fmtBps(bps) {
+  return bps >= 1_000_000 ? `${(bps/1_000_000).toFixed(1)} Mb/s`
+                           : `${(bps/1_000).toFixed(0)} kb/s`;
+}
+
+function startAuto(initialBps) {
+  autoBps      = Math.min(AUTO_MAX_BPS, Math.max(AUTO_MIN_BPS, initialBps));
+  autoStableMs = 0;
+  autoMode       = true;
+  clearInterval(autoTimer);
+  autoTimer = setInterval(autoTick, 10_000);
+  updateAutoLabel();
+}
+
+function stopAuto() {
+  autoMode = false;
+  clearInterval(autoTimer);
+  autoTimer = null;
+  autoLabel.textContent = '';
+}
+
+function updateAutoLabel() {
+  autoLabel.textContent = autoMode ? fmtBps(autoBps) : '';
+}
+
+function autoTick() {
+  if (!decoder || decoder.state !== 'configured') return;
+  const jitter = calcJitter();
+  const queue  = decoder.decodeQueueSize ?? 0;
+  if (jitter === null) return;
+
+  if (jitter > 30 || queue > 2) {
+    autoBps = Math.max(AUTO_MIN_BPS, autoBps * DOWN_FACTOR);
+    autoStableMs = 0;
+    applyAutoBps();
+  } else if (jitter < 8 && queue === 0) {
+    autoStableMs += 10_000;
+    if (autoStableMs >= STABLE_NEEDED && autoBps < AUTO_MAX_BPS) {
+      autoBps = Math.min(AUTO_MAX_BPS, autoBps * UP_FACTOR);
+      autoStableMs = 0;
+      applyAutoBps();
+    }
+  } else {
+    autoStableMs = 0;
+  }
+  updateAutoLabel();
+}
+
+function applyAutoBps() {
+  fetch(`/droidctrl/bitrate?value=${Math.round(autoBps)}`).catch(() => {});
+  updateAutoLabel();
+}
+
+
+bitsel.addEventListener('change', () => {
+  if (bitsel.value === 'auto') {
+    startAuto(parseBps(bitsel.dataset.lastManual || String(AUTO_MAX_BPS)));
+  } else {
+    bitsel.dataset.lastManual = bitsel.value;
+    stopAuto();
+    fetch(`/droidctrl/bitrate?value=${bitsel.value}`).catch(() => {});
+  }
+});
+
+ressel.addEventListener('change', () => {
+  fetch(`/droidctrl/resolution?value=${ressel.value}`).catch(() => {});
+});
+const toggleModal    = document.getElementById('toggle-modal');
+const modalList      = document.getElementById('toggle-modal-list');
+
+// Gear button → open modal
+document.getElementById('gear-btn').addEventListener('click', openToggleModal);
+document.getElementById('toggle-modal-bg').addEventListener('click', closeToggleModal);
+document.getElementById('modal-close').addEventListener('click', closeToggleModal);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeToggleModal(); });
+
+async function openToggleModal() {
+  toggleModal.classList.add('open');
+  await refreshModal();
+}
+function closeToggleModal() {
+  toggleModal.classList.remove('open');
+}
+
+async function refreshModal() {
+  const r = await fetch('/droidctrl/item/list').catch(() => null);
+  renderModal(r?.ok ? await r.json() : []);
+}
+
+function renderModal(itemList) {
+  modalList.innerHTML = '';
+  if (!itemList.length) {
+    modalList.innerHTML = '<div style="color:#555;font:11px monospace;padding:6px 0">Nothing registered yet.</div>';
+    return;
+  }
+  for (const item of itemList) {
+    const row = document.createElement('div');
+    row.className = 'modal-row';
+    row.dataset.modalItemId = item.id;
+    const label = document.createElement('span');
+    label.className = 'modal-label'; label.textContent = item.desc;
+
+    if (item.type === 'button') {
+      label.className = 'modal-btn modal-btn-full' + (item.state ? ' is-on' : '');
+      label.style.cursor = 'pointer';
+      label.addEventListener('click', () => clickItemFromModal(item.id, row));
+      row.append(label);
+    } else if (item.type === 'toggle') {
+      const onBtn = document.createElement('button');
+      const offBtn = document.createElement('button');
+      onBtn.className  = 'modal-btn' + (item.state  ? ' is-on'  : '');
+      offBtn.className = 'modal-btn' + (!item.state ? ' is-off' : '');
+      onBtn.textContent = 'ON'; offBtn.textContent = 'OFF';
+      onBtn.addEventListener('click',  () => setItemFromModal(item.id, true,  row));
+      offBtn.addEventListener('click', () => setItemFromModal(item.id, false, row));
+      row.append(label, onBtn, offBtn);
+    } else {  // numeric
+      const group = document.createElement('div');
+      group.className = 'modal-numeric-group';
+      const input = document.createElement('input');
+      input.type = 'number'; input.className = 'modal-value-input';
+      input.value = item.state;
+      const commit = () => {
+        const n = parseFloat(input.value);
+        if (!isNaN(n))
+          fetch(`/droidctrl/item/set?id=${encodeURIComponent(item.id)}&state=${n}`).catch(() => {});
+      };
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') { commit(); input.blur(); } });
+      const step = (delta) => {
+        input.value = (parseFloat(input.value) || 0) + delta;
+        commit();
+      };
+      const minusBtn = document.createElement('button');
+      minusBtn.className = 'modal-step-btn'; minusBtn.textContent = '−';
+      minusBtn.addEventListener('click', () => step(-10));
+      const plusBtn = document.createElement('button');
+      plusBtn.className = 'modal-step-btn'; plusBtn.textContent = '+';
+      plusBtn.addEventListener('click', () => step(10));
+      group.append(minusBtn, input, plusBtn);
+      row.append(label, group);
+    }
+    modalList.appendChild(row);
   }
 }
 
-// Load server-registered one-shot buttons on page load.
-async function loadButtons() {
-  const r = await fetch('/droidctrl/sidebar-button/list').catch(() => null);
-  if (!r?.ok) return;
-  const list = await r.json();
-  sidebar.querySelectorAll('[data-button-id]').forEach(el => el.remove());
-  for (const b of list) {
-    const btn = document.createElement('button');
-    btn.className = 'nav-btn';
-    btn.dataset.tip = b.tooltip;
-    btn.dataset.buttonId = b.id;
-    btn.innerHTML = b.icon || TOGGLE_ICON;
-    sidebar.appendChild(btn);
+async function clickItemFromModal(id, row) {
+  const r = await fetch(`/droidctrl/item/click?id=${encodeURIComponent(id)}`).catch(() => null);
+  if (r?.ok) { const d = await r.json(); updateModalRow(row, d.state); }
+}
+
+async function setItemFromModal(id, state, row) {
+  await fetch(`/droidctrl/item/set?id=${encodeURIComponent(id)}&state=${state}`).catch(() => {});
+  updateModalRow(row, state);
+}
+
+function updateModalRow(row, state) {
+  const fullBtn = row.querySelector('.modal-btn-full');
+  if (fullBtn) {
+    fullBtn.className = 'modal-btn modal-btn-full' + (state ? ' is-on' : '');
+    return;
+  }
+  const [onBtn, offBtn] = row.querySelectorAll('.modal-btn');
+  if (onBtn)  onBtn.className  = 'modal-btn' + (state  ? ' is-on'  : '');
+  if (offBtn) offBtn.className = 'modal-btn' + (!state ? ' is-off' : '');
+}
+
+const sidebar = document.getElementById('sidebar');
+
+function applyItemStates(states) {
+  for (const [id, val] of Object.entries(states)) {
+    const row = modalList.querySelector(`[data-modal-item-id="${CSS.escape(id)}"]`);
+    if (!row) continue;
+    const input = row.querySelector('input[type="number"]');
+    if (input) { if (document.activeElement !== input) input.value = val; }
+    else updateModalRow(row, !!val);
   }
 }
-loadButtons();
 
-// Load server-registered toggles (automator-added) on page load.
-async function loadToggles() {
-  const r = await fetch('/droidctrl/toggle/list').catch(() => null);
-  if (!r?.ok) return;
-  const list = await r.json();
-  sidebar.querySelectorAll('[data-toggle-id]').forEach(el => el.remove());
-  for (const t of list) droidctrlAddToggle(t.id, t.icon || TOGGLE_ICON, t.tooltip, t.state);
-}
-loadToggles();
-
-// Poll toggle states every 2s so automator-driven changes propagate.
+// Poll item states every 2s so automator-driven changes propagate.
 setInterval(async () => {
-  const r = await fetch('/droidctrl/toggle/states').catch(() => null);
-  if (r?.ok) applyToggleStates(await r.json());
+  const r = await fetch('/droidctrl/item/states').catch(() => null);
+  if (r?.ok) applyItemStates(await r.json());
 }, 2000);
 
 // Built-in nav buttons (keyevent via server)
@@ -156,48 +402,28 @@ sidebar.addEventListener('click', e => {
   if (!btn) return;
   if (btn.dataset.kc) {
     fetch(`/droidctrl/keyevent?code=${btn.dataset.kc}`).catch(() => {});
-  } else if (btn.dataset.toggleId) {
-    fetch(`/droidctrl/toggle/click?id=${encodeURIComponent(btn.dataset.toggleId)}`)
-      .then(r => r.json())
-      .then(d => btn.classList.toggle('toggle-on', d.state))
-      .catch(() => {});
-  } else if (btn.dataset.buttonId) {
-    fetch(`/droidctrl/sidebar-button/click?id=${encodeURIComponent(btn.dataset.buttonId)}`).catch(() => {});
   }
 });
 
-// Hook: add a one-shot button. action = {kc: keycode} or {url: '/path'}.
-window.droidctrlAddButton = (svgHTML, tooltip, action) => {
-  const btn = document.createElement('button');
-  btn.className = 'nav-btn';
-  btn.dataset.tip = tooltip;
-  btn.innerHTML = svgHTML;
-  if (action.kc !== undefined)
-    btn.addEventListener('click', () => fetch(`/droidctrl/keyevent?code=${action.kc}`).catch(() => {}));
-  else if (action.url)
-    btn.addEventListener('click', () => fetch(action.url).catch(() => {}));
-  sidebar.appendChild(btn);
-};
-
-// Hook: add a stateful toggle. Server-registered toggles are added via loadToggles().
-// JS callers (e.g. browser console) can call this directly.
-window.droidctrlAddToggle = (id, svgHTML, tooltip, initialState = false) => {
-  // Remove existing button with the same id if re-registering.
-  sidebar.querySelector(`[data-toggle-id="${CSS.escape(id)}"]`)?.remove();
-  const btn = document.createElement('button');
-  btn.className = 'nav-btn' + (initialState ? ' toggle-on' : '');
-  btn.dataset.tip = tooltip;
-  btn.dataset.toggleId = id;
-  btn.innerHTML = svgHTML || TOGGLE_ICON;
-  sidebar.appendChild(btn);
-};
-bitsel.addEventListener('change', () => {
-  fetch(`/droidctrl/bitrate?value=${bitsel.value}`).catch(() => {});
-});
-
-// Sync dropdown to whatever the server currently has (survives restarts).
+// Toggles are managed via the gear modal only. Register them server-side via
+// Register items server-side via GET /item/register — they appear in the gear modal.
+// Sync dropdowns to server state on load.
 fetch('/droidctrl/settings').then(r => r.json()).then(s => {
-  if (s.bitrate) bitsel.value = s.bitrate;
+  if (s.res_divisor) {
+    const opt = RES_OPTIONS.find(r => r.divisor === s.res_divisor);
+    if (opt) ressel.value = opt.value;
+  }
+  if (s.bitrate) {
+    const bps = parseBps(s.bitrate);
+    const menuOpt = [...bitsel.options].find(o => o.value !== 'auto' && Math.abs(parseBps(o.value) - bps) < 1);
+    if (menuOpt) {
+      bitsel.value = menuOpt.value;
+      bitsel.dataset.lastManual = menuOpt.value;
+    } else {
+      bitsel.value = 'auto';
+      startAuto(bps);
+    }
+  }
 }).catch(() => {});
 
 // ---------------------------------------------------------------------------
@@ -273,11 +499,25 @@ const STAT_WIN = 8;
 let statFpsBuf = [], statBwBuf = [], statTickFps = 0, statTickBw = 0;
 let statCodec = '', statW = 0, statH = 0;
 
+// Frame arrival times for jitter calculation (rolling window of 60 frames).
+const JITTER_WIN = 60;
+let frameTimes = [];
+
 function fmtBw(bytesPerSec) {
   const bps = bytesPerSec * 8;
   return bps >= 1e6
     ? `${(bps / 1e6).toFixed(1)} Mb/s`
     : `${(bps / 1e3).toFixed(0)} kb/s`;
+}
+
+function calcJitter() {
+  if (frameTimes.length < 3) return null;
+  const intervals = [];
+  for (let i = 1; i < frameTimes.length; i++)
+    intervals.push(frameTimes[i] - frameTimes[i - 1]);
+  const mean = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+  const variance = intervals.reduce((a, b) => a + (b - mean) ** 2, 0) / intervals.length;
+  return Math.sqrt(variance);
 }
 
 function tickStats() {
@@ -290,7 +530,12 @@ function tickStats() {
   const curBw  = statBwBuf.at(-1);
   const avgFps = statFpsBuf.reduce((a, v) => a + v, 0) / statFpsBuf.length;
   const avgBw  = statBwBuf.reduce((a, v) => a + v, 0) / statBwBuf.length;
-  stattext.textContent = `${curFps} fps  ${fmtBw(curBw)} · avg ${avgFps.toFixed(1)} fps  ${fmtBw(avgBw)}`;
+
+  const jitter = calcJitter();
+  const queue  = decoder.decodeQueueSize ?? 0;
+  const jitterStr = jitter !== null ? `  jitter ${jitter.toFixed(0)}ms  buf ${queue}` : '';
+
+  stattext.textContent = `${curFps} fps  ${fmtBw(curBw)} · avg ${avgFps.toFixed(1)} fps  ${fmtBw(avgBw)}${jitterStr}`;
   if (statW) {
     const r  = canvas.getBoundingClientRect();
     const dw = Math.round(r.width), dh = Math.round(r.height);
@@ -325,7 +570,9 @@ function openDecoder(sps, pps) {
       frame.close();
       statTickFps++;
       statW = fw; statH = fh;
-      resetWatchdog();
+      const now = performance.now();
+      frameTimes.push(now);
+      if (frameTimes.length > JITTER_WIN) frameTimes.shift();
     },
     error(e) { console.error('[decoder]', e); closeDecoder(); },
   });
@@ -357,11 +604,40 @@ let _watchdog = null;
 function resetWatchdog() {
   clearTimeout(_watchdog);
   _watchdog = setTimeout(() => {
-    console.warn('[watchdog] no frames for 10s, reconnecting');
+    console.warn('[watchdog] no data for 5s, reconnecting');
     if (_activeWs) _activeWs.close();
-  }, 10000);
+  }, 5000);
 }
 let _activeWs = null;
+
+// Reconnect when the tab becomes visible after being backgrounded.
+// Mobile browsers freeze pages while hidden; the WebSocket appears OPEN but
+// is stale. Two fixes needed:
+//   1. Use null (not 0) as sentinel so a slow initial load never triggers.
+//   2. If the WS is already CLOSED, call connect() directly — close() on a
+//      CLOSED socket is a no-op and won't fire onclose.
+let _hiddenAt = null;
+
+function _forceReconnect() {
+  if (!_activeWs || _activeWs.readyState === WebSocket.CLOSED) {
+    connect();
+  } else {
+    _activeWs.close();  // triggers onclose → setTimeout(connect, 1000)
+  }
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    _hiddenAt = performance.now();
+  } else if (_hiddenAt !== null && performance.now() - _hiddenAt > 3000) {
+    _hiddenAt = null;
+    _forceReconnect();
+  }
+});
+// pageshow with persisted=true = bfcache restore; WebSocket is always stale.
+window.addEventListener('pageshow', e => {
+  if (e.persisted) _forceReconnect();
+});
 
 function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -376,16 +652,36 @@ function connect() {
     streaminfo.textContent = '';
     spsRaw = null; ppsRaw = null;
     statFpsBuf = []; statBwBuf = []; statTickFps = 0; statTickBw = 0;
+    frameTimes = [];
     closeDecoder();
     resetWatchdog();
   };
   ws.onmessage = e => {
+    if (typeof e.data !== 'string') resetWatchdog(); // any data = connection alive
     if (typeof e.data === 'string') {
       try {
         const m = JSON.parse(e.data);
-        if (m.settings?.bitrate) bitsel.value = m.settings.bitrate;
-        if (m.toggles)  applyToggleStates(m.toggles);
-        if (m.buttons)  loadButtons();
+        if (m.reload) {
+          // sessionStorage cooldown prevents a reload loop when the server sends
+          // the signal to every new connection during its 30-second startup window.
+          const last = parseInt(sessionStorage.getItem('lastServerReload') || '0');
+          if (Date.now() - last > 10000) {
+            sessionStorage.setItem('lastServerReload', String(Date.now()));
+            location.reload();
+          }
+          return;
+        }
+        if (m.settings?.bitrate && !autoMode) {
+          const bps = parseBps(m.settings.bitrate);
+          const opt = [...bitsel.options].find(o => o.value !== 'auto' && Math.abs(parseBps(o.value) - bps) < 1);
+          if (opt) bitsel.value = opt.value;
+        }
+        if (m.settings?.res_divisor !== undefined && !autoMode) {
+          const opt = RES_OPTIONS.find(r => r.divisor === m.settings.res_divisor);
+          if (opt) ressel.value = opt.value;
+        }
+        if (m.item_states) applyItemStates(m.item_states);
+        if (m.item_list)   { if (toggleModal.classList.contains('open')) refreshModal(); }
       } catch {}
       return;
     }
@@ -413,6 +709,13 @@ function phoneCoords(clientX, clientY) {
     y: Math.round((clientY - r.top)  * (canvas.height / r.height)),
   };
 }
+
+// Cursor position display — phone coordinates shown in status bar.
+canvas.addEventListener('mousemove', e => {
+  const {x, y} = phoneCoords(e.clientX, e.clientY);
+  cursorinfo.textContent = `(${x}, ${y})`;
+});
+canvas.addEventListener('mouseleave', () => { cursorinfo.textContent = ''; });
 
 // Tap (short click) and drag (mousedown → move → mouseup).
 let downAt = null, downPhone = null, downTime = null;
@@ -446,17 +749,25 @@ canvas.addEventListener('mouseleave', () => { downAt = downPhone = null; });
 let touchStart = null;
 canvas.addEventListener('touchstart', e => {
   if (e.touches.length !== 1) return;
-  touchStart = {x: e.touches[0].clientX, y: e.touches[0].clientY};
-}, {passive: true});
+  e.preventDefault(); // prevents browser synthesizing mouse events → stops double-tap
+  touchStart = phoneCoords(e.touches[0].clientX, e.touches[0].clientY);
+  downTime = performance.now();
+}, {passive: false});
 canvas.addEventListener('touchend', e => {
   if (!touchStart || e.changedTouches.length !== 1) { touchStart = null; return; }
+  e.preventDefault();
   const t = e.changedTouches[0];
-  const dx = t.clientX - touchStart.x, dy = t.clientY - touchStart.y;
+  const end = phoneCoords(t.clientX, t.clientY);
+  const dx = end.x - touchStart.x, dy = end.y - touchStart.y;
+  const start = touchStart;
   touchStart = null;
-  if (Math.hypot(dx, dy) > 12) return;
-  const {x, y} = phoneCoords(t.clientX, t.clientY);
-  fetch(`/droidctrl/tap?x=${x}&y=${y}`).catch(() => {});
-}, {passive: true});
+  if (Math.hypot(dx, dy) <= 30) {
+    fetch(`/droidctrl/tap?x=${end.x}&y=${end.y}`).catch(() => {});
+  } else {
+    const dur = Math.round(Math.max(30, Math.min(performance.now() - downTime, 600)));
+    fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${end.x}&y2=${end.y}&duration=${dur}`).catch(() => {});
+  }
+}, {passive: false});
 
 // ---------------------------------------------------------------------------
 // Keyboard — printable ASCII only

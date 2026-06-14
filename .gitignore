@@ -1,5 +1,6 @@
 .env
 data/
+compose.yml
 compose.override.yml
 compose.override.yaml
 

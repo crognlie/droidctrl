@@ -8,55 +8,82 @@ terminating screenrecord with no zombie processes.
 import asyncio
 import json
 import os
+import re
 import shlex
-from aiohttp import web, ClientSession, ClientTimeout
+from aiohttp import web
 
 SETTINGS_FILE = "/data/stream_settings.json"
 BIT_RATE = os.environ.get("BIT_RATE", "8M")
 
+SCREEN_W = os.environ.get("SCREEN_W", "0")
+SCREEN_H = os.environ.get("SCREEN_H", "0")
+
+RES_DIVISOR = 1     # 1=full, 2=half, 4=quarter native resolution
+NATIVE_W    = 0     # detected from `adb shell wm size` at startup
+NATIVE_H    = 0
+
+
+def _parse_bps(val: str) -> int:
+    """Parse a bitrate string to bits-per-second.
+    Accepts: '8M' → 8_000_000, '512k' → 512_000, '6000000' → 6_000_000."""
+    v = val.strip().upper()
+    if v.endswith("M"):
+        return int(float(v[:-1]) * 1_000_000)
+    if v.endswith("K"):
+        return int(float(v[:-1]) * 1_000)
+    return int(float(v))
+
+clients: set[web.WebSocketResponse] = set()
+stream_proc: asyncio.subprocess.Process | None = None
+stream_gen = 0
+
+# Unified item registry — type is "button", "toggle", or "numeric".
+# button/toggle: {type, desc, state (bool), order, preserve_state}
+# numeric:       {type, desc, value (float), order, preserve_state}
+items: dict[str, dict] = {}
+
+
+def _item_list():
+    return sorted([
+        {"id": iid, "type": i["type"], "desc": i["desc"],
+         "state": i["state"], "order": i.get("order", 0)}
+        for iid, i in items.items()
+    ], key=lambda x: (x["order"], x["id"]))
+
 
 def _load_settings():
-    global BIT_RATE
+    global BIT_RATE, RES_DIVISOR, items
     try:
         with open(SETTINGS_FILE) as f:
             s = json.load(f)
-        if "bitrate" in s:
-            BIT_RATE = s["bitrate"]
-            print(f"[*] loaded settings: bitrate={BIT_RATE}", flush=True)
-            return
+        if "bitrate"     in s: BIT_RATE    = s["bitrate"]
+        if "res_divisor" in s: RES_DIVISOR = int(s["res_divisor"])
+        if "items"       in s: items        = s["items"]
+        res = {1: "full", 2: "half", 4: "quarter"}.get(RES_DIVISOR, "full")
+        print(f"[*] loaded settings: bitrate={BIT_RATE} res={res} "
+              f"{len(items)} item(s)", flush=True)
+        return
     except (FileNotFoundError, json.JSONDecodeError):
         pass
-    # No settings file yet — write defaults now so it exists for next time
     print(f"[*] initialising settings: bitrate={BIT_RATE}", flush=True)
     _save_settings()
 
 def _save_settings():
     try:
         with open(SETTINGS_FILE, "w") as f:
-            json.dump({"bitrate": BIT_RATE}, f)
+            json.dump({"bitrate": BIT_RATE, "res_divisor": RES_DIVISOR,
+                       "items": items}, f)
     except OSError as e:
         print(f"[!] couldn't save settings: {e}", flush=True)
 
 _load_settings()
-SCREEN_W = os.environ.get("SCREEN_W", "0")
-SCREEN_H = os.environ.get("SCREEN_H", "0")
-
-clients: set[web.WebSocketResponse] = set()
-stream_proc: asyncio.subprocess.Process | None = None
-stream_gen = 0
-
-# One-shot button registry — automator registers; browser loads and clicks.
-# Each entry: {tooltip, adb_cmd, icon}
-sidebar_buttons: dict[str, dict] = {}
-
-# Toggle registry — automator registers entries; browser polls and clicks.
-# Each entry: {tooltip, state, callback, icon}
-toggles: dict[str, dict] = {}
 
 
-async def _broadcast_toggles():
-    """Push current toggle states to all WS clients."""
-    msg = json.dumps({"toggles": {tid: t["state"] for tid, t in toggles.items()}})
+_reload_until = 0.0  # event-loop time; new connections get a reload signal before this
+
+
+async def _broadcast_reload():
+    msg = json.dumps({"reload": True})
     for ws in list(clients):
         try:
             await ws.send_str(msg)
@@ -64,25 +91,45 @@ async def _broadcast_toggles():
             pass
 
 
-async def _fire_callback(url: str, tid: str, state: bool):
-    try:
-        async with ClientSession() as s:
-            await s.post(url, json={"id": tid, "state": state},
-                         timeout=ClientTimeout(total=5))
-    except Exception as e:
-        print(f"[!] toggle callback {url}: {e}", flush=True)
+async def _broadcast_item_states():
+    """Lightweight push: current state for every item."""
+    msg = json.dumps({"item_states": {iid: i["state"] for iid, i in items.items()}})
+    for ws in list(clients):
+        try:
+            await ws.send_str(msg)
+        except Exception:
+            pass
+
+
+async def _broadcast_item_list():
+    """Full metadata push on structural changes (register/deregister)."""
+    msg = json.dumps({"item_list": _item_list()})
+    for ws in list(clients):
+        try:
+            await ws.send_str(msg)
+        except Exception:
+            pass
 
 
 def _screenrecord_args():
     """Build the screenrecord argument list (runs on the phone via adb shell)."""
-    bitrate = int(BIT_RATE.rstrip("Mm")) * 1_000_000
-    size = f"--size={SCREEN_W}x{SCREEN_H}" if SCREEN_W != "0" and SCREEN_H != "0" else ""
+    bitrate = _parse_bps(BIT_RATE)
+    # Resolution: explicit env override → half-res → native (no --size flag)
+    if SCREEN_W != "0" and SCREEN_H != "0":
+        size = f"--size={SCREEN_W}x{SCREEN_H}"
+    elif RES_DIVISOR > 1 and NATIVE_W and NATIVE_H:
+        # Round to nearest even number (H.264 requirement)
+        w = (NATIVE_W // RES_DIVISOR) & ~1
+        h = (NATIVE_H // RES_DIVISOR) & ~1
+        size = f"--size={w}x{h}"
+    else:
+        size = ""
     return " ".join(filter(None, [
         "screenrecord",
         "--output-format=h264",
         f"--bit-rate={bitrate}",
         size,
-        "-",   # write to stdout (fd 1) directly, bypasses fopen
+        "-",
     ]))
 
 
@@ -105,6 +152,14 @@ async def broadcaster():
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
+
+            # Nudge the H.264 encoder to emit an initial IDR frame even when
+            # the screen is fully static. KEYCODE_WAKEUP is a no-op on an
+            # already-on display but causes the display pipeline to flush.
+            async def _nudge():
+                await asyncio.sleep(0.3)
+                await _adb_input("input keyevent 224")
+            asyncio.create_task(_nudge())
 
             try:
                 while True:
@@ -154,6 +209,13 @@ async def broadcaster():
             await asyncio.sleep(2)
 
 
+async def reload_handler(request):
+    """Tell all connected browser sessions to reload the page."""
+    await _broadcast_reload()
+    print("[*] reload broadcast sent", flush=True)
+    return web.Response(status=204)
+
+
 async def ws_handler(request):
     global stream_gen
     ws = web.WebSocketResponse()
@@ -162,6 +224,13 @@ async def ws_handler(request):
         stream_gen += 1   # new session — broadcaster will restart for fresh SPS/PPS
     clients.add(ws)
     print(f"[*] client connected ({len(clients)} total, gen={stream_gen})", flush=True)
+    # During the startup reload window, tell this client to reload so it picks
+    # up any code changes deployed with the container.
+    if asyncio.get_event_loop().time() < _reload_until:
+        try:
+            await ws.send_str(json.dumps({"reload": True}))
+        except Exception:
+            pass
     try:
         async for _ in ws:
             pass
@@ -195,19 +264,41 @@ async def _adb_input(cmd: str):
 
 async def bitrate_handler(request):
     global BIT_RATE, stream_gen
-    val = request.rel_url.query.get("value", "").upper().strip()
-    if val and val.rstrip("M").isdigit():
-        BIT_RATE = val if val.endswith("M") else val + "M"
-        stream_gen += 1   # triggers broadcaster to restart with new bitrate
-        print(f"[*] bitrate → {BIT_RATE}", flush=True)
-        _save_settings()
-        # Push updated settings to all connected sessions
-        msg = json.dumps({"settings": {"bitrate": BIT_RATE}})
-        for ws in list(clients):
-            try:
-                await ws.send_str(msg)
-            except Exception:
-                pass
+    val = request.rel_url.query.get("value", "").strip()
+    try:
+        bps = _parse_bps(val)
+        if bps <= 0:
+            raise ValueError
+    except (ValueError, ZeroDivisionError):
+        return web.Response(status=400)
+    BIT_RATE = str(bps)
+    stream_gen += 1
+    print(f"[*] bitrate → {bps:,} bps", flush=True)
+    _save_settings()
+    msg = json.dumps({"settings": {"bitrate": BIT_RATE, "res_divisor": RES_DIVISOR,
+                                   "native_w": NATIVE_W, "native_h": NATIVE_H}})
+    for ws in list(clients):
+        try: await ws.send_str(msg)
+        except Exception: pass
+    return web.Response(status=204)
+
+
+_RES_NAMES = {"full": 1, "half": 2, "quarter": 4}
+
+async def resolution_handler(request):
+    global RES_DIVISOR, stream_gen
+    val = request.rel_url.query.get("value", "").lower()
+    if val not in _RES_NAMES:
+        return web.Response(status=400)
+    RES_DIVISOR = _RES_NAMES[val]
+    stream_gen += 1
+    print(f"[*] resolution → {val}", flush=True)
+    _save_settings()
+    msg = json.dumps({"settings": {"bitrate": BIT_RATE, "res_divisor": RES_DIVISOR,
+                                   "native_w": NATIVE_W, "native_h": NATIVE_H}})
+    for ws in list(clients):
+        try: await ws.send_str(msg)
+        except Exception: pass
     return web.Response(status=204)
 
 
@@ -233,99 +324,88 @@ async def swipe_handler(request):
     return web.Response(status=204)
 
 
-async def sidebar_button_register(request):
-    """Automator registers a one-shot button: id, tooltip, adb_cmd, icon."""
+async def item_register(request):
+    """Register or update an item. type is 'button', 'toggle', or 'numeric'."""
     q = request.rel_url.query
-    bid = q.get("id", "").strip()
-    adb_cmd = q.get("adb_cmd", "").strip()
-    if not bid or not adb_cmd:
+    iid = q.get("id", "").strip()
+    itype = q.get("type", "toggle").lower()
+    if not iid or itype not in ("button", "toggle", "numeric"):
         return web.Response(status=400)
-    sidebar_buttons[bid] = {
-        "tooltip": q.get("tooltip", bid),
-        "adb_cmd": adb_cmd,
-        "icon":    q.get("icon", ""),
-    }
-    print(f"[*] button registered: {bid}", flush=True)
-    msg = json.dumps({"buttons": [
-        {"id": k, "tooltip": v["tooltip"], "icon": v["icon"]}
-        for k, v in sidebar_buttons.items()
-    ]})
-    for ws in list(clients):
-        try: await ws.send_str(msg)
-        except Exception: pass
+    try:
+        order = int(q.get("order", items[iid].get("order", 0) if iid in items else 0))
+    except ValueError:
+        order = 0
+    preserve = q.get("preserve_state", "false").lower() in ("true", "1")
+    desc = q.get("desc", iid)
+    raw = q.get("state", "0" if itype == "numeric" else "false")
+    existing = items[iid]["state"] if (preserve and iid in items) else None
+    if itype == "numeric":
+        try:
+            state = existing if existing is not None else float(raw)
+        except ValueError:
+            state = 0.0
+    else:
+        state = existing if existing is not None else raw.lower() in ("true", "1")
+    items[iid] = {"type": itype, "desc": desc, "state": state, "order": order}
+    print(f"[*] item registered: {iid} type={itype}", flush=True)
+    _save_settings()
+    await _broadcast_item_list()
     return web.Response(status=204)
 
 
-async def sidebar_button_click(request):
-    """Browser clicked a one-shot button — run its adb command."""
-    bid = request.rel_url.query.get("id", "").strip()
-    if bid not in sidebar_buttons:
-        return web.Response(status=404)
-    asyncio.create_task(_adb_input(sidebar_buttons[bid]["adb_cmd"]))
-    return web.Response(status=204)
-
-
-async def sidebar_button_list(request):
-    """Browser fetches button list on load."""
-    return web.json_response([
-        {"id": bid, "tooltip": b["tooltip"], "icon": b["icon"]}
-        for bid, b in sidebar_buttons.items()
-    ])
-
-
-async def toggle_register(request):
-    """Automator registers a toggle: id, tooltip, state, callback, icon (SVG string)."""
+async def item_set(request):
+    """Set an item's state. For numeric, state is a float; for toggle/button, bool."""
     q = request.rel_url.query
-    tid = q.get("id", "").strip()
-    if not tid:
-        return web.Response(status=400)
-    toggles[tid] = {
-        "tooltip":  q.get("tooltip",  tid),
-        "state":    q.get("state",    "false").lower() in ("true", "1"),
-        "callback": q.get("callback", ""),
-        "icon":     q.get("icon",     ""),
-    }
-    print(f"[*] toggle registered: {tid} state={toggles[tid]['state']}", flush=True)
-    await _broadcast_toggles()
+    iid = q.get("id", "").strip()
+    if iid not in items:
+        return web.Response(status=404)
+    item = items[iid]
+    raw = q.get("state", "")
+    if item["type"] == "numeric":
+        try:
+            item["state"] = float(raw)
+        except ValueError:
+            return web.Response(status=400)
+    else:
+        item["state"] = raw.lower() in ("true", "1")
+    _save_settings()
+    await _broadcast_item_states()
     return web.Response(status=204)
 
 
-async def toggle_set(request):
-    """Automator updates a toggle's state without a browser click."""
-    q = request.rel_url.query
-    tid = q.get("id", "").strip()
-    if tid not in toggles:
+async def item_click(request):
+    """Browser clicked an item — toggle flips, button sets true."""
+    iid = request.rel_url.query.get("id", "").strip()
+    if iid not in items:
         return web.Response(status=404)
-    toggles[tid]["state"] = q.get("state", "false").lower() in ("true", "1")
-    await _broadcast_toggles()
+    item = items[iid]
+    if item["type"] == "toggle":
+        item["state"] = not item["state"]
+    elif item["type"] == "button":
+        item["state"] = True
+    print(f"[*] item clicked: {iid} → {item['state']}", flush=True)
+    _save_settings()
+    await _broadcast_item_states()
+    return web.json_response({"id": iid, "state": item["state"]})
+
+
+async def item_deregister(request):
+    iid = request.rel_url.query.get("id", "").strip()
+    if iid not in items:
+        return web.Response(status=404)
+    del items[iid]
+    print(f"[*] item deregistered: {iid}", flush=True)
+    _save_settings()
+    await _broadcast_item_list()
     return web.Response(status=204)
 
 
-async def toggle_click(request):
-    """Browser clicked a toggle — flip state, push update, fire callback."""
-    tid = request.rel_url.query.get("id", "").strip()
-    if tid not in toggles:
-        return web.Response(status=404)
-    toggles[tid]["state"] = not toggles[tid]["state"]
-    new_state = toggles[tid]["state"]
-    print(f"[*] toggle clicked: {tid} → {new_state}", flush=True)
-    await _broadcast_toggles()
-    if toggles[tid]["callback"]:
-        asyncio.create_task(_fire_callback(toggles[tid]["callback"], tid, new_state))
-    return web.json_response({"id": tid, "state": new_state})
+async def item_states(request):
+    return web.json_response({iid: i["state"] for iid, i in items.items()})
 
 
-async def toggle_states(request):
-    """Browser polls all toggle states."""
-    return web.json_response({tid: t["state"] for tid, t in toggles.items()})
-
-
-async def toggle_list(request):
-    """Browser fetches full toggle list (id, tooltip, state, icon) on load."""
-    return web.json_response([
-        {"id": tid, "tooltip": t["tooltip"], "state": t["state"], "icon": t["icon"]}
-        for tid, t in toggles.items()
-    ])
+async def item_list(request):
+    return web.json_response(_item_list())
 
 
 async def keyevent_handler(request):
@@ -364,6 +444,20 @@ async def index(request):
 
 
 async def on_startup(app):
+    global _reload_until, NATIVE_W, NATIVE_H
+    _reload_until = asyncio.get_event_loop().time() + 30
+    # Detect native phone resolution for half-res support.
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "adb", "shell", "wm", "size",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(p.communicate(), timeout=5)
+        m = re.search(r"(\d+)x(\d+)", out.decode())
+        if m:
+            NATIVE_W, NATIVE_H = int(m.group(1)), int(m.group(2))
+            print(f"[*] native resolution: {NATIVE_W}x{NATIVE_H}", flush=True)
+    except Exception:
+        pass
     asyncio.create_task(broadcaster())
 
 
@@ -372,15 +466,18 @@ async def main():
     app.on_startup.append(on_startup)
     app.router.add_get("/", index)
     app.router.add_get("/ws", ws_handler)
-    app.router.add_get("/settings", lambda r: web.json_response({"bitrate": BIT_RATE}))
-    app.router.add_get("/sidebar-button",        sidebar_button_register)
-    app.router.add_get("/sidebar-button/click",  sidebar_button_click)
-    app.router.add_get("/sidebar-button/list",   sidebar_button_list)
-    app.router.add_get("/toggle/register", toggle_register)
-    app.router.add_get("/toggle/set",      toggle_set)
-    app.router.add_get("/toggle/click",    toggle_click)
-    app.router.add_get("/toggle/states",   toggle_states)
-    app.router.add_get("/toggle/list",     toggle_list)
+    app.router.add_get("/reload",   reload_handler)
+    app.router.add_get("/settings", lambda r: web.json_response({
+        "bitrate": BIT_RATE, "res_divisor": RES_DIVISOR,
+        "native_w": NATIVE_W, "native_h": NATIVE_H,
+    }))
+    app.router.add_get("/resolution", resolution_handler)
+    app.router.add_get("/item/register",   item_register)
+    app.router.add_get("/item/set",        item_set)
+    app.router.add_get("/item/click",      item_click)
+    app.router.add_get("/item/deregister", item_deregister)
+    app.router.add_get("/item/states",     item_states)
+    app.router.add_get("/item/list",       item_list)
     app.router.add_get("/keyevent", keyevent_handler)
     app.router.add_get("/key", key_handler)
     app.router.add_get("/bitrate", bitrate_handler)
