@@ -19,31 +19,45 @@ adb -a -P 5037 nodaemon server &
 ADB_PID=$!
 sleep 1
 
-echo "[*] Waiting for USB device..."
-for attempt in 1 2 3; do
-    if timeout 8 adb wait-for-device; then
-        break
-    fi
-    echo "[!] No device after 8s (attempt $attempt/3)"
-    if [ "$attempt" -lt 3 ]; then
-        python3 /usb_reset.py "${USB_RESET_VID:-18d1}" || true
-        adb kill-server 2>/dev/null || true
-        sleep 2
-        adb -a -P 5037 nodaemon server &
-        ADB_PID=$!
-        sleep 2
-    fi
-done
-adb wait-for-device
-echo "[*] Device found: $(adb devices | tail -n +2 | head -1)"
+if [ -n "${ADB_TCP_DEVICE:-}" ]; then
+    # Non-Linux hosts (macOS, Windows): connect to phone over TCP/WiFi instead of USB.
+    # Enable on the phone first: adb tcpip 5555
+    echo "[*] Connecting to ADB TCP device: $ADB_TCP_DEVICE"
+    adb connect "$ADB_TCP_DEVICE"
+    adb wait-for-device
+    echo "[*] Device found: $(adb devices | tail -n +2 | head -1)"
+else
+    # Linux: wait for USB device with wedge recovery.
+    echo "[*] Waiting for USB device..."
+    for attempt in 1 2 3; do
+        if timeout 8 adb wait-for-device; then
+            break
+        fi
+        echo "[!] No device after 8s (attempt $attempt/3)"
+        if [ "$attempt" -lt 3 ]; then
+            python3 /usb_reset.py "${USB_RESET_VID:-18d1}" || true
+            adb kill-server 2>/dev/null || true
+            sleep 2
+            adb -a -P 5037 nodaemon server &
+            ADB_PID=$!
+            sleep 2
+        fi
+    done
+    adb wait-for-device
+    echo "[*] Device found: $(adb devices | tail -n +2 | head -1)"
+fi
 
 echo "[*] Setting device to stay on while plugged in"
 adb shell svc power stayon usb 2>/dev/null || true
 
 if [ "${REVERSE_TETHER:-false}" = "true" ]; then
-    echo "[*] Starting reverse tether (gnirehtet)"
-    (cd /usr/local/bin && gnirehtet run) &
-    GNIREHTET_PID=$!
+    if command -v gnirehtet >/dev/null 2>&1; then
+        echo "[*] Starting reverse tether (gnirehtet)"
+        (cd /usr/local/bin && gnirehtet run) &
+        GNIREHTET_PID=$!
+    else
+        echo "[!] REVERSE_TETHER=true but gnirehtet is not available on this architecture"
+    fi
 fi
 
 echo "[*] Starting stream server on port 6080"
