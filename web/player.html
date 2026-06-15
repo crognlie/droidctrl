@@ -122,7 +122,7 @@
 <body>
   <div id="status">
     <span id="stattext">connecting…</span>
-    <span id="version">v5</span>
+    <span id="version">v6</span>
     <span id="cursorinfo"></span>
     <span id="streaminfo"></span>
     <span id="bwctl">bitrate <select id="bitsel">
@@ -782,10 +782,15 @@ canvas.addEventListener('touchend', e => {
   const dx = end.x - touchStart.x, dy = end.y - touchStart.y;
   const start = touchStart;
   touchStart = null;
+  const elapsed = Math.round(performance.now() - touchDownTime);
   if (Math.hypot(dx, dy) <= 30) {
-    fetch(`/droidctrl/tap?x=${end.x}&y=${end.y}`).catch(() => {});
+    if (elapsed < 500) {
+      fetch(`/droidctrl/tap?x=${end.x}&y=${end.y}`).catch(() => {});
+    } else {
+      fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${start.x}&y2=${start.y}&duration=${elapsed}`).catch(() => {});
+    }
   } else {
-    const dur = Math.round(Math.max(30, Math.min(performance.now() - touchDownTime, 600)));
+    const dur = Math.round(Math.max(30, Math.min(elapsed, 600)));
     fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${end.x}&y2=${end.y}&duration=${dur}`).catch(() => {});
   }
 }, {passive: false});
