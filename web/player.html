@@ -24,6 +24,10 @@
     #version { position: absolute; left: 50%; transform: translateX(-50%); color: #444; pointer-events: none; }
     #stattext { flex: 1; white-space: nowrap; overflow: hidden; }
     #bwctl, #resctl { white-space: nowrap; flex-shrink: 0; }
+    @media (max-width: 600px) {
+      #status { font-size: 9px; padding: 1px 6px; }
+      #streaminfo, #cursorinfo, #stattext { display: none; }
+    }
     #auto-label { color: #7a7; font-size: 10px; }
     #bwctl select, #resctl select {
       background: #222; color: #ccc; border: 1px solid #444;
@@ -123,7 +127,7 @@
 <body>
   <div id="status">
     <span id="stattext">connecting…</span>
-    <span id="version">v8</span>
+    <span id="version">v9</span>
     <span id="cursorinfo"></span>
     <span id="streaminfo"></span>
     <span id="bwctl">bitrate <select id="bitsel">
@@ -189,6 +193,7 @@ function fitCanvas() {
   canvas.style.height = Math.round(canvas.height * scale) + 'px';
 }
 window.addEventListener('resize', fitCanvas);
+new ResizeObserver(fitCanvas).observe(canvasArea);
 const status   = document.getElementById('status');    // kept for any remaining refs
 const stattext = document.getElementById('stattext');
 const bitsel      = document.getElementById('bitsel');
