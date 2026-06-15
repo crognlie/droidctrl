@@ -223,7 +223,11 @@ async def ws_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     if not clients:
-        stream_gen += 1   # new session — broadcaster will restart for fresh SPS/PPS
+        stream_gen += 1   # no stream running — restart for fresh SPS/PPS
+    else:
+        # Stream already running — nudge encoder to emit an IDR so this
+        # client can start decoding without waiting for the next key frame.
+        asyncio.create_task(_adb_input("input keyevent 224"))
     clients.add(ws)
     print(f"[*] client connected ({len(clients)} total, gen={stream_gen})", flush=True)
     # During the startup reload window, tell this client to reload so it picks
