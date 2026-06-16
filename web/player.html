@@ -7,6 +7,7 @@
 <html style="margin:0;padding:0;overflow:hidden">
 <head>
   <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
   <title>Android</title>
   <link rel="icon" type="image/png" sizes="32x32"   href="/droidctrl/icons/droidctrl-32x32.png">
   <link rel="icon" type="image/png" sizes="192x192" href="/droidctrl/icons/droidctrl-192x192.png">
@@ -15,26 +16,59 @@
     html, body { height: 100%; background: #000; overflow: hidden; }
     body { display: flex; flex-direction: column; }
     #status {
-      flex-shrink: 0;
+      flex-shrink: 0; position: relative;
       display: flex; align-items: center; justify-content: space-between;
       color: #aaa; font: 11px/1.6 monospace;
       background: #111; padding: 2px 8px; gap: 12px;
     }
-    #stattext { flex: 1; white-space: nowrap; overflow: hidden; }
-    #bwctl, #resctl { white-space: nowrap; flex-shrink: 0; }
-    #auto-label { color: #7a7; font-size: 10px; }
-    #bwctl select, #resctl select {
-      background: #222; color: #ccc; border: 1px solid #444;
-      font: inherit; padding: 1px 2px; cursor: pointer; border-radius: 2px;
+    #version { flex-shrink: 0; margin-left: auto; color: #ccc; }
+    #stattext { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #cursorinfo { position: absolute; left: 50%; transform: translateX(-50%); pointer-events: none; }
+    @media (max-width: 600px) {
+      #status { font-size: 9px; padding: 1px 6px; }
     }
+    /* Stream settings modal */
+    #stream-modal {
+      display: none; position: fixed; inset: 0; z-index: 200;
+      align-items: center; justify-content: center; pointer-events: all;
+    }
+    #stream-modal.open { display: flex; }
+    #stream-modal-bg { position: absolute; inset: 0; background: rgba(0,0,0,.25); }
+    #stream-modal-card {
+      position: relative; z-index: 1;
+      background: rgba(18,20,28,.92); border: 1px solid rgba(255,255,255,.18);
+      border-radius: 20px; padding: 24px 28px;
+      width: min(520px, 96vw); max-height: 90vh; overflow-y: auto;
+      backdrop-filter: blur(12px);
+    }
+    #stream-modal-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px; color: #ccc; font: bold 20px/1 monospace;
+    }
+    #stream-modal-close {
+      background: none; border: none; color: #888; cursor: pointer;
+      font-size: 28px; padding: 0 0 0 20px; line-height: 1;
+    }
+    #stream-modal-close:hover { color: #fff; }
+    #stream-modal-card .modal-row { padding: 12px 0; }
+    #stream-modal-card .modal-label { font-size: 16px; }
+    .stream-select {
+      background: #222; color: #ccc; border: 1px solid #444;
+      font: 16px monospace; padding: 8px 12px; cursor: pointer; border-radius: 6px;
+    }
+    #auto-label { color: #7a7; font: 14px monospace; }
+    #streaminfo { color: #aaa; font: 13px monospace; }
+    #modal-stats-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    #modal-stats-table td { font: 13px monospace; color: #aaa; padding: 2px 12px 2px 0; vertical-align: top; }
+    #modal-stats-table td:first-child { color: #666; width: 90px; white-space: nowrap; }
     #viewport {
       flex: 1; min-height: 0;
-      display: flex; flex-direction: row; align-items: center;
+      display: flex; flex-direction: row;
       overflow: hidden;
     }
-    #left-margin  { flex: 1; }
-    canvas        { flex: 0 1 auto; max-height: 100%; cursor: crosshair; }
-    #right-margin { flex: 1; min-width: 64px; display: flex; justify-content: center; align-items: center; }
+    #canvas-area  { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    canvas        { cursor: crosshair; }
+    #right-margin { flex-shrink: 0; width: 64px; display: flex; justify-content: center; align-items: center; }
     #sidebar {
       display: flex; flex-direction: column; align-items: center;
       gap: 16px;
@@ -122,23 +156,12 @@
   <div id="status">
     <span id="stattext">connecting…</span>
     <span id="cursorinfo"></span>
-    <span id="streaminfo"></span>
-    <span id="bwctl">bitrate <select id="bitsel">
-      <option value="auto">Auto</option>
-      <option value="2000000">2 Mb/s</option>
-      <option value="4000000">4 Mb/s</option>
-      <option value="8000000" selected>8 Mb/s</option>
-      <option value="16000000">16 Mb/s</option>
-    </select> <span id="auto-label"></span></span>
-    <span id="resctl">res <select id="ressel">
-      <option value="full">Full</option>
-      <option value="half">½</option>
-      <option value="quarter">¼</option>
-    </select></span>
+    <span id="version">v17</span>
   </div>
   <div id="viewport">
-    <div id="left-margin"></div>
-    <canvas id="c"></canvas>
+    <div id="canvas-area">
+      <canvas id="c"></canvas>
+    </div>
     <div id="right-margin">
       <nav id="sidebar">
         <button class="nav-btn" data-kc="3" data-tip="Home">
@@ -152,6 +175,9 @@
           </svg>
         </button>
         <hr>
+        <button class="nav-btn" id="stream-btn" data-tip="Stream settings">
+          <img src="/droidctrl/icons/droidctrl-32x32.png" style="width:22px;height:22px">
+        </button>
         <button class="nav-btn" id="gear-btn" data-tip="Manage toggles">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="3"/>
@@ -171,18 +197,70 @@
       <div id="toggle-modal-list"></div>
     </div>
   </div>
+  <div id="stream-modal">
+    <div id="stream-modal-bg"></div>
+    <div id="stream-modal-card">
+      <div id="stream-modal-header">
+        <span>Stream</span>
+        <button id="stream-modal-close">✕</button>
+      </div>
+      <div class="modal-row">
+        <span class="modal-label">Resolution</span>
+        <select id="ressel" class="stream-select">
+          <option value="full">Full</option>
+          <option value="half">½</option>
+          <option value="quarter">¼</option>
+        </select>
+      </div>
+      <div class="modal-row">
+        <span class="modal-label">Bitrate</span>
+        <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+          <select id="bitsel" class="stream-select">
+            <option value="auto">Auto</option>
+            <option value="2000000">2 Mb/s</option>
+            <option value="4000000">4 Mb/s</option>
+            <option value="8000000" selected>8 Mb/s</option>
+            <option value="16000000">16 Mb/s</option>
+          </select>
+          <span id="auto-label"></span>
+        </div>
+      </div>
+      <div class="modal-row">
+        <span class="modal-label">Stream</span>
+        <span id="streaminfo">—</span>
+      </div>
+      <div class="modal-row" style="flex-direction:column;align-items:flex-start;border-bottom:none">
+        <span class="modal-label">Stats</span>
+        <table id="modal-stats-table">
+          <tr><td>fps</td><td id="stat-fps">—</td></tr>
+          <tr><td>bandwidth</td><td id="stat-bw">—</td></tr>
+          <tr><td>jitter</td><td id="stat-jitter">—</td></tr>
+          <tr><td>decode queue</td><td id="stat-queue">—</td></tr>
+        </table>
+      </div>
+    </div>
+  </div>
   <script>
 'use strict';
 
-const canvas   = document.getElementById('c');
-const ctx      = canvas.getContext('2d');
-const status   = document.getElementById('status');    // kept for any remaining refs
-const stattext = document.getElementById('stattext');
-const bitsel      = document.getElementById('bitsel');
-const ressel      = document.getElementById('ressel');
-const autoLabel   = document.getElementById('auto-label');
-const streaminfo  = document.getElementById('streaminfo');
-const cursorinfo  = document.getElementById('cursorinfo');
+const canvas    = document.getElementById('c');
+const ctx       = canvas.getContext('2d');
+const canvasArea = document.getElementById('canvas-area');
+
+function fitCanvas() {
+  if (!canvas.width || !canvas.height) return;
+  const scale = Math.min(canvasArea.clientWidth / canvas.width, canvasArea.clientHeight / canvas.height);
+  canvas.style.width  = Math.round(canvas.width  * scale) + 'px';
+  canvas.style.height = Math.round(canvas.height * scale) + 'px';
+}
+window.addEventListener('resize', fitCanvas);
+new ResizeObserver(fitCanvas).observe(canvasArea);
+const stattext   = document.getElementById('stattext');
+const cursorinfo = document.getElementById('cursorinfo');
+const bitsel     = document.getElementById('bitsel');
+const ressel     = document.getElementById('ressel');
+const autoLabel  = document.getElementById('auto-label');
+const streaminfo = document.getElementById('streaminfo');
 
 // ---------------------------------------------------------------------------
 // Auto bitrate
@@ -285,7 +363,16 @@ const modalList      = document.getElementById('toggle-modal-list');
 document.getElementById('gear-btn').addEventListener('click', openToggleModal);
 document.getElementById('toggle-modal-bg').addEventListener('click', closeToggleModal);
 document.getElementById('modal-close').addEventListener('click', closeToggleModal);
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeToggleModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeToggleModal(); closeStreamModal(); }
+});
+
+// Stream settings modal
+const streamModal = document.getElementById('stream-modal');
+document.getElementById('stream-btn').addEventListener('click', () => streamModal.classList.add('open'));
+document.getElementById('stream-modal-close').addEventListener('click', closeStreamModal);
+document.getElementById('stream-modal-bg').addEventListener('click', closeStreamModal);
+function closeStreamModal() { streamModal.classList.remove('open'); }
 
 async function openToggleModal() {
   toggleModal.classList.add('open');
@@ -360,6 +447,7 @@ function renderModal(itemList) {
 async function clickItemFromModal(id, row) {
   const r = await fetch(`/droidctrl/item/click?id=${encodeURIComponent(id)}`).catch(() => null);
   if (r?.ok) { const d = await r.json(); updateModalRow(row, d.state); }
+  closeToggleModal();
 }
 
 async function setItemFromModal(id, state, row) {
@@ -419,6 +507,7 @@ fetch('/droidctrl/settings').then(r => r.json()).then(s => {
     if (menuOpt) {
       bitsel.value = menuOpt.value;
       bitsel.dataset.lastManual = menuOpt.value;
+      autoLabel.textContent = '';
     } else {
       bitsel.value = 'auto';
       startAuto(bps);
@@ -533,9 +622,21 @@ function tickStats() {
 
   const jitter = calcJitter();
   const queue  = decoder.decodeQueueSize ?? 0;
-  const jitterStr = jitter !== null ? `  jitter ${jitter.toFixed(0)}ms  buf ${queue}` : '';
 
-  stattext.textContent = `${curFps} fps  ${fmtBw(curBw)} · avg ${avgFps.toFixed(1)} fps  ${fmtBw(avgBw)}${jitterStr}`;
+  // Compact status bar: "x.xmb NNms jit"
+  const bwMb   = (avgBw * 8 / 1e6).toFixed(1);
+  const jitPart = jitter !== null ? ` · ${jitter.toFixed(0)}ms jit` : '';
+  stattext.textContent = `${bwMb}mb${jitPart}`;
+
+  // Full stats in the stream modal table
+  const statFpsEl = document.getElementById('stat-fps');
+  if (statFpsEl) {
+    statFpsEl.textContent = `${curFps}  (avg ${avgFps.toFixed(1)})`;
+    document.getElementById('stat-bw').textContent    = `${fmtBw(curBw)}  (avg ${fmtBw(avgBw)})`;
+    document.getElementById('stat-jitter').textContent = jitter !== null ? `${jitter.toFixed(0)} ms` : '—';
+    document.getElementById('stat-queue').textContent  = queue;
+  }
+
   if (statW) {
     const r  = canvas.getBoundingClientRect();
     const dw = Math.round(r.width), dh = Math.round(r.height);
@@ -565,6 +666,7 @@ function openDecoder(sps, pps) {
       const fw = frame.displayWidth, fh = frame.displayHeight;
       if (canvas.width !== fw || canvas.height !== fh) {
         canvas.width = fw; canvas.height = fh;
+        fitCanvas();
       }
       ctx.drawImage(frame, 0, 0);
       frame.close();
@@ -710,14 +812,30 @@ function phoneCoords(clientX, clientY) {
   };
 }
 
-// Cursor position display — phone coordinates shown in status bar.
+let cursorClearTimer = null;
+function scheduleCursorClear() {
+  clearTimeout(cursorClearTimer);
+  cursorClearTimer = setTimeout(() => { cursorinfo.textContent = ''; }, 10000);
+}
 canvas.addEventListener('mousemove', e => {
+  clearTimeout(cursorClearTimer);
   const {x, y} = phoneCoords(e.clientX, e.clientY);
   cursorinfo.textContent = `(${x}, ${y})`;
 });
-canvas.addEventListener('mouseleave', () => { cursorinfo.textContent = ''; });
+canvas.addEventListener('mouseleave', () => {
+  scheduleCursorClear();
+  downAt = downPhone = null;
+});
+canvas.addEventListener('touchmove', e => {
+  if (e.touches.length !== 1) return;
+  clearTimeout(cursorClearTimer);
+  const {x, y} = phoneCoords(e.touches[0].clientX, e.touches[0].clientY);
+  cursorinfo.textContent = `(${x}, ${y})`;
+}, {passive: true});
 
-// Tap (short click) and drag (mousedown → move → mouseup).
+// Tap, drag, and long-press via mousedown → mouseup gesture collection.
+// Long-press: same-origin swipe with actual hold duration — Android's gesture
+// detector fires the long-press callback after ~500ms of stationary touch.
 let downAt = null, downPhone = null, downTime = null;
 canvas.addEventListener('mousedown', e => {
   downAt    = {x: e.clientX, y: e.clientY};
@@ -729,31 +847,35 @@ canvas.addEventListener('mouseup', e => {
   const dx = e.clientX - downAt.x, dy = e.clientY - downAt.y;
   const start = downPhone;
   downAt = downPhone = null;
-  const dist = Math.hypot(dx, dy);
+  const elapsed = Math.round(performance.now() - downTime);
+  const dist    = Math.hypot(dx, dy);
   if (dist <= 8) {
-    // tap
-    const {x, y} = phoneCoords(e.clientX, e.clientY);
-    fetch(`/droidctrl/tap?x=${x}&y=${y}`).catch(() => {});
+    if (elapsed < 500) {
+      // Quick tap
+      const {x, y} = phoneCoords(e.clientX, e.clientY);
+      fetch(`/droidctrl/tap?x=${x}&y=${y}`).catch(() => {});
+    } else {
+      // Long press: zero-movement swipe with actual hold duration
+      fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${start.x}&y2=${start.y}&duration=${elapsed}`).catch(() => {});
+    }
   } else {
-    // drag
+    // Drag
     const end = phoneCoords(e.clientX, e.clientY);
-    // Use actual elapsed time so fast flicks produce fast swipes (needed for
-    // velocity-based gestures like dismissing apps in the recents screen).
-    const dur = Math.round(Math.max(30, Math.min(performance.now() - downTime, 600)));
+    const dur = Math.round(Math.max(30, Math.min(elapsed, 600)));
     fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${end.x}&y2=${end.y}&duration=${dur}`).catch(() => {});
   }
 });
-canvas.addEventListener('mouseleave', () => { downAt = downPhone = null; });
 
-// Touch tap (single finger, no drag).
-let touchStart = null;
+// Touch tap (single finger, no drag) — for touchscreen browsers.
+let touchStart = null, touchDownTime = null;
 canvas.addEventListener('touchstart', e => {
   if (e.touches.length !== 1) return;
   e.preventDefault(); // prevents browser synthesizing mouse events → stops double-tap
   touchStart = phoneCoords(e.touches[0].clientX, e.touches[0].clientY);
-  downTime = performance.now();
+  touchDownTime = performance.now();
 }, {passive: false});
 canvas.addEventListener('touchend', e => {
+  scheduleCursorClear();
   if (!touchStart || e.changedTouches.length !== 1) { touchStart = null; return; }
   e.preventDefault();
   const t = e.changedTouches[0];
@@ -761,20 +883,41 @@ canvas.addEventListener('touchend', e => {
   const dx = end.x - touchStart.x, dy = end.y - touchStart.y;
   const start = touchStart;
   touchStart = null;
+  const elapsed = Math.round(performance.now() - touchDownTime);
   if (Math.hypot(dx, dy) <= 30) {
-    fetch(`/droidctrl/tap?x=${end.x}&y=${end.y}`).catch(() => {});
+    if (elapsed < 500) {
+      fetch(`/droidctrl/tap?x=${end.x}&y=${end.y}`).catch(() => {});
+    } else {
+      fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${start.x}&y2=${start.y}&duration=${elapsed}`).catch(() => {});
+    }
   } else {
-    const dur = Math.round(Math.max(30, Math.min(performance.now() - downTime, 600)));
+    const dur = Math.round(Math.max(30, Math.min(elapsed, 600)));
     fetch(`/droidctrl/drag?x1=${start.x}&y1=${start.y}&x2=${end.x}&y2=${end.y}&duration=${dur}`).catch(() => {});
   }
 }, {passive: false});
 
 // ---------------------------------------------------------------------------
-// Keyboard — printable ASCII only
+// Keyboard — printable chars + mapped special keys
 // ---------------------------------------------------------------------------
+const KEY_MAP = {
+  'Backspace':   67,   // KEYCODE_DEL
+  'Delete':     112,   // KEYCODE_FORWARD_DEL
+  'Enter':       66,   // KEYCODE_ENTER
+  'Tab':         61,   // KEYCODE_TAB
+  'ArrowUp':     19,   // KEYCODE_DPAD_UP
+  'ArrowDown':   20,   // KEYCODE_DPAD_DOWN
+  'ArrowLeft':   21,   // KEYCODE_DPAD_LEFT
+  'ArrowRight':  22,   // KEYCODE_DPAD_RIGHT
+};
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
   if (e.ctrlKey || e.metaKey) return;
+  const kc = KEY_MAP[e.key];
+  if (kc) {
+    e.preventDefault();
+    fetch(`/droidctrl/keyevent?code=${kc}`).catch(() => {});
+    return;
+  }
   if (e.key.length !== 1) return;
   e.preventDefault();
   fetch(`/droidctrl/key?text=${encodeURIComponent(e.key)}`).catch(() => {});

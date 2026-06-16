@@ -37,6 +37,7 @@ clients: set[web.WebSocketResponse] = set()
 stream_proc: asyncio.subprocess.Process | None = None
 stream_gen = 0
 
+
 # Unified item registry — type is "button", "toggle", or "numeric".
 # button/toggle: {type, desc, state (bool), order, preserve_state}
 # numeric:       {type, desc, value (float), order, preserve_state}
@@ -109,6 +110,7 @@ async def _broadcast_item_list():
             await ws.send_str(msg)
         except Exception:
             pass
+
 
 
 def _screenrecord_args():
@@ -220,8 +222,7 @@ async def ws_handler(request):
     global stream_gen
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    if not clients:
-        stream_gen += 1   # new session — broadcaster will restart for fresh SPS/PPS
+    stream_gen += 1  # restart screenrecord so every new client gets fresh SPS/PPS
     clients.add(ws)
     print(f"[*] client connected ({len(clients)} total, gen={stream_gen})", flush=True)
     # During the startup reload window, tell this client to reload so it picks
