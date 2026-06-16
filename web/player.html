@@ -156,7 +156,7 @@
   <div id="status">
     <span id="stattext">connecting…</span>
     <span id="cursorinfo"></span>
-    <span id="version">v15</span>
+    <span id="version">v17</span>
   </div>
   <div id="viewport">
     <div id="canvas-area">
@@ -447,6 +447,7 @@ function renderModal(itemList) {
 async function clickItemFromModal(id, row) {
   const r = await fetch(`/droidctrl/item/click?id=${encodeURIComponent(id)}`).catch(() => null);
   if (r?.ok) { const d = await r.json(); updateModalRow(row, d.state); }
+  closeToggleModal();
 }
 
 async function setItemFromModal(id, state, row) {
@@ -896,11 +897,27 @@ canvas.addEventListener('touchend', e => {
 }, {passive: false});
 
 // ---------------------------------------------------------------------------
-// Keyboard — printable ASCII only
+// Keyboard — printable chars + mapped special keys
 // ---------------------------------------------------------------------------
+const KEY_MAP = {
+  'Backspace':   67,   // KEYCODE_DEL
+  'Delete':     112,   // KEYCODE_FORWARD_DEL
+  'Enter':       66,   // KEYCODE_ENTER
+  'Tab':         61,   // KEYCODE_TAB
+  'ArrowUp':     19,   // KEYCODE_DPAD_UP
+  'ArrowDown':   20,   // KEYCODE_DPAD_DOWN
+  'ArrowLeft':   21,   // KEYCODE_DPAD_LEFT
+  'ArrowRight':  22,   // KEYCODE_DPAD_RIGHT
+};
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
   if (e.ctrlKey || e.metaKey) return;
+  const kc = KEY_MAP[e.key];
+  if (kc) {
+    e.preventDefault();
+    fetch(`/droidctrl/keyevent?code=${kc}`).catch(() => {});
+    return;
+  }
   if (e.key.length !== 1) return;
   e.preventDefault();
   fetch(`/droidctrl/key?text=${encodeURIComponent(e.key)}`).catch(() => {});
