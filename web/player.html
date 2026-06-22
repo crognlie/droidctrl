@@ -26,10 +26,16 @@
     #cursorinfo { position: absolute; left: 50%; transform: translateX(-50%); pointer-events: none; }
     @media (max-width: 600px) {
       #status { font-size: 9px; padding: 1px 6px; }
+      #toggle-modal-card { padding: 12px 16px; }
+      .modal-row { padding: 8px 0; }
+      .modal-label { font-size: 16px; }
+      .modal-btn { padding: 12px 20px; font-size: 15px; }
+      .modal-step-btn { padding: 12px 10px; font-size: 17px; }
+      #toggle-modal-header { font-size: 18px; margin-bottom: 12px; }
     }
     /* Stream settings modal */
     #stream-modal {
-      display: none; position: fixed; inset: 0; z-index: 200;
+      display: none; position: fixed; inset: 0 64px 0 0; z-index: 200;
       align-items: center; justify-content: center; pointer-events: all;
     }
     #stream-modal.open { display: flex; }
@@ -88,7 +94,7 @@
     #sidebar hr { width: 28px; border: none; border-top: 1px solid rgba(255,255,255,.15); margin: 4px 0; }
     /* Toggle modal */
     #toggle-modal {
-      display: none; position: fixed; inset: 0; z-index: 200;
+      display: none; position: fixed; inset: 0 64px 0 0; z-index: 200;
       align-items: center; justify-content: center;
       pointer-events: all;
     }
@@ -100,7 +106,7 @@
       position: relative; z-index: 1;
       background: rgba(18,20,28,.92); border: 1px solid rgba(255,255,255,.18);
       border-radius: 20px; padding: 28px 32px;
-      width: min(680px, 96vw); max-height: 90vh; overflow-y: auto;
+      width: min(680px, 96vw);
       backdrop-filter: blur(12px);
     }
     #toggle-modal-header {
@@ -156,7 +162,7 @@
   <div id="status">
     <span id="stattext">connecting…</span>
     <span id="cursorinfo"></span>
-    <span id="version">v19</span>
+    <span id="version">v31</span>
   </div>
   <div id="viewport">
     <div id="canvas-area">
@@ -380,9 +386,29 @@ document.getElementById('stream-modal-close').addEventListener('click', closeStr
 document.getElementById('stream-modal-bg').addEventListener('click', closeStreamModal);
 function closeStreamModal() { streamModal.classList.remove('open'); }
 
+const toggleModalCard = document.getElementById('toggle-modal-card');
+function _fitModalToWindow() {
+  toggleModalCard.style.zoom = '';
+  toggleModalCard.style.width = '';
+  const vh = window.visualViewport?.height ?? window.innerHeight;
+  const available = vh * 0.9;
+  const naturalH = toggleModalCard.scrollHeight;
+  if (naturalH > available) {
+    const ratio = available / naturalH;
+    toggleModalCard.style.zoom = ratio.toFixed(3);
+    // Counteract the width shrinkage from zoom so the card stays at 96vw.
+    // Pre-zoom width = desired rendered width / ratio.
+    const maxW = Math.min(680, window.innerWidth * 0.96 / ratio);
+    toggleModalCard.style.width = maxW + 'px';
+  }
+}
+window.addEventListener('resize', _fitModalToWindow);
+window.visualViewport?.addEventListener('resize', _fitModalToWindow);
+
 async function openToggleModal() {
   toggleModal.classList.add('open');
   await refreshModal();
+  _fitModalToWindow();
 }
 function closeToggleModal() {
   toggleModal.classList.remove('open');
@@ -490,14 +516,19 @@ setInterval(async () => {
   if (r?.ok) applyItemStates(await r.json());
 }, 2000);
 
-// Built-in nav buttons (keyevent via server)
+// Built-in nav buttons (keyevent via server).
+// Capture phase so this runs before button-specific listeners (e.g. gear-btn
+// opens a modal; we close any open modal first, then the button's own handler
+// re-opens the correct one).
 sidebar.addEventListener('click', e => {
   const btn = e.target.closest('.nav-btn');
   if (!btn) return;
+  closeToggleModal();
+  closeStreamModal();
   if (btn.dataset.kc) {
     fetch(`/droidctrl/keyevent?code=${btn.dataset.kc}`).catch(() => {});
   }
-});
+}, { capture: true });
 
 document.getElementById('screenshot-btn').addEventListener('click', () => {
   canvas.toBlob(blob => {
@@ -723,11 +754,12 @@ let _watchdog = null;
 function resetWatchdog() {
   clearTimeout(_watchdog);
   _watchdog = setTimeout(() => {
-    console.warn('[watchdog] no data for 5s, reconnecting');
+    console.warn('[watchdog] no data for 15s, reconnecting');
     if (_activeWs) _activeWs.close();
-  }, 5000);
+  }, 15000);
 }
 let _activeWs = null;
+let _reconnectDelay = 1000;
 
 // Reconnect when the tab becomes visible after being backgrounded.
 // Mobile browsers freeze pages while hidden; the WebSocket appears OPEN but
@@ -767,6 +799,7 @@ function connect() {
   const push = makeNalSplitter(handleNal);
 
   ws.onopen  = () => {
+    _reconnectDelay = 1000;
     stattext.textContent = 'connected — waiting for stream…';
     streaminfo.textContent = '';
     spsRaw = null; ppsRaw = null;
@@ -807,7 +840,19 @@ function connect() {
     statTickBw += e.data.byteLength;
     push(new Uint8Array(e.data));
   };
-  ws.onclose = () => { closeDecoder(); stattext.textContent = 'reconnecting…'; setTimeout(connect, 1000); };
+  ws.onclose = () => {
+    closeDecoder();
+    const delay = _reconnectDelay;
+    _reconnectDelay = Math.min(_reconnectDelay * 2, 30000);
+    let remaining = Math.round(delay / 1000);
+    stattext.textContent = `reconnecting in ${remaining}s…`;
+    const countdown = setInterval(() => {
+      remaining--;
+      if (remaining > 0) stattext.textContent = `reconnecting in ${remaining}s…`;
+      else clearInterval(countdown);
+    }, 1000);
+    setTimeout(() => { clearInterval(countdown); connect(); }, delay);
+  };
   ws.onerror = e => console.error('[ws]', e);
 }
 
