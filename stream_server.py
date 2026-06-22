@@ -34,8 +34,13 @@ def _parse_bps(val: str) -> int:
     return int(float(v))
 
 clients: set[web.WebSocketResponse] = set()
+passive_clients: set[web.WebSocketResponse] = set()  # subset of clients; excluded from restart decisions
 stream_proc: asyncio.subprocess.Process | None = None
 stream_gen = 0
+_last_nonpassive_left: float = 0.0  # monotonic time when most recent non-passive client disconnected
+# SPS+PPS bytes from the most recent keyframe; injected into new passive
+# clients so they can start decoding without waiting for the next IDR nudge.
+_cached_headers: bytes = b""
 
 
 # Unified item registry — type is "button", "toggle", or "numeric".
@@ -149,6 +154,27 @@ _GUARDIAN_RESTORE = (
 )
 
 
+async def _phone_state_log():
+    """Log phone display state every 5 minutes for diagnostics."""
+    while True:
+        await asyncio.sleep(300)
+        try:
+            p = await asyncio.create_subprocess_exec(
+                "adb", "shell",
+                "echo brightness=$(settings get system screen_brightness)"
+                "; echo stayon=$(settings get global stay_on_while_plugged_in)"
+                "; echo screen=$(dumpsys display 2>/dev/null | grep -m1 'mScreenState')"
+                "; echo wakefulness=$(dumpsys power 2>/dev/null | grep -m1 'mWakefulness')"
+                "; echo interactive=$(dumpsys power 2>/dev/null | grep -m1 'mInteractive')",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(p.communicate(), timeout=10)
+            info = out.decode(errors="replace").strip().replace("\n", " | ")
+            print(f"[~] phone state: clients={len(clients)} stream={'up' if stream_proc else 'down'} | {info}", flush=True)
+        except Exception as e:
+            print(f"[~] phone state poll failed: {e}", flush=True)
+
+
 async def brightness_guardian():
     """Long-lived adb shell that applies phone display settings while connected
     and restores them automatically on USB disconnect or container stop."""
@@ -168,9 +194,34 @@ async def brightness_guardian():
         await asyncio.sleep(3)
 
 
+def _extract_headers(chunk: bytes) -> bytes:
+    """Return SPS+PPS NAL units from chunk, or b'' if none found.
+    Scans for 00 00 00 01 67 (SPS) and collects until a non-SPS/PPS NAL."""
+    out = bytearray()
+    i = 0
+    n = len(chunk)
+    while i < n - 4:
+        if chunk[i:i+4] == b'\x00\x00\x00\x01':
+            nal_type = chunk[i+4] & 0x1f
+            if nal_type in (7, 8):  # SPS=7, PPS=8
+                # Find next start code
+                j = i + 4
+                while j < n - 3:
+                    if chunk[j:j+4] == b'\x00\x00\x00\x01':
+                        break
+                    j += 1
+                out += chunk[i:j]
+                i = j
+                continue
+            elif out:
+                break  # stop after SPS/PPS section ends
+        i += 1
+    return bytes(out)
+
+
 async def broadcaster():
     """Fan out H.264 to all WebSocket clients. One screenrecord per session."""
-    global stream_proc, stream_gen
+    global stream_proc, stream_gen, _cached_headers
     while True:
         try:
             while not clients:
@@ -209,10 +260,14 @@ async def broadcaster():
                         break
                     if stream_gen != my_gen:
                         break
+                    # Cache SPS+PPS for clients that join mid-stream.
+                    hdrs = _extract_headers(chunk)
+                    if hdrs:
+                        _cached_headers = hdrs
                     dead = set()
                     for ws in list(clients):
                         try:
-                            await ws.send_bytes(chunk)
+                            await asyncio.wait_for(ws.send_bytes(chunk), timeout=2.0)
                         except Exception:
                             dead.add(ws)
                     clients.difference_update(dead)
@@ -252,19 +307,33 @@ async def reload_handler(request):
 
 
 async def ws_handler(request):
-    global stream_gen
-    ws = web.WebSocketResponse()
+    global stream_gen, _last_nonpassive_left
+    # ?passive=1: join without triggering a stream restart or IDR nudge.
+    # Used by the automator so it doesn't disrupt other connected clients.
+    passive = request.rel_url.query.get("passive", "0") not in ("0", "false", "")
+    ws = web.WebSocketResponse(heartbeat=10.0)
     await ws.prepare(request)
-    was_empty = not clients
+    # Restart decisions ignore passive clients; only non-passive viewers count.
+    non_passive = clients - passive_clients
+    was_empty = not non_passive
+    now = asyncio.get_event_loop().time()
+    recent_refresh = (now - _last_nonpassive_left < 10.0)
     clients.add(ws)
-    if was_empty or stream_proc is None:
-        # No screenrecord running — bump gen so the broadcaster starts one.
-        stream_gen += 1
-    else:
-        # Screenrecord already running; nudge the encoder for a fresh IDR so
-        # the joining client doesn't wait through the next natural keyframe.
-        asyncio.create_task(_adb_input("input keyevent 224"))
-    print(f"[*] client connected ({len(clients)} total, gen={stream_gen})", flush=True)
+    if passive:
+        passive_clients.add(ws)
+    if not passive:
+        if was_empty or stream_proc is None or recent_refresh:
+            stream_gen += 1
+        else:
+            asyncio.create_task(_adb_input("input keyevent 224"))
+    print(f"[*] client connected passive={passive} ({len(clients)} total, gen={stream_gen})", flush=True)
+    # Inject cached SPS+PPS for passive clients joining mid-stream so they
+    # can decode without waiting for the next KEYCODE_WAKEUP nudge.
+    if passive and _cached_headers:
+        try:
+            await ws.send_bytes(_cached_headers)
+        except Exception:
+            pass
     # During the startup reload window, tell this client to reload so it picks
     # up any code changes deployed with the container.
     if asyncio.get_event_loop().time() < _reload_until:
@@ -277,6 +346,9 @@ async def ws_handler(request):
             pass
     finally:
         clients.discard(ws)
+        passive_clients.discard(ws)
+        if not passive:
+            _last_nonpassive_left = asyncio.get_event_loop().time()
         print(f"[*] client disconnected ({len(clients)} remaining)", flush=True)
     return ws
 
@@ -499,8 +571,11 @@ async def on_startup(app):
             print(f"[*] native resolution: {NATIVE_W}x{NATIVE_H}", flush=True)
     except Exception:
         pass
-    asyncio.create_task(brightness_guardian())
-    asyncio.create_task(broadcaster())
+    _bg_tasks = set()
+    for coro in (brightness_guardian(), _phone_state_log(), broadcaster()):
+        t = asyncio.create_task(coro)
+        _bg_tasks.add(t)
+        t.add_done_callback(_bg_tasks.discard)
 
 
 async def main():
