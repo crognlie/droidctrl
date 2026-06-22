@@ -53,8 +53,6 @@ else
     echo "[*] Device found: $(adb devices | tail -n +2 | head -1)"
 fi
 
-echo "[*] Setting device to stay on while plugged in"
-adb shell svc power stayon usb 2>/dev/null || true
 
 if [ "${REVERSE_TETHER:-false}" = "true" ]; then
     if command -v gnirehtet >/dev/null 2>&1; then

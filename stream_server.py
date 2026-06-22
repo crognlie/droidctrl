@@ -135,6 +135,39 @@ def _screenrecord_args():
     ]))
 
 
+_GUARDIAN_APPLY = (
+    "locksettings set-disabled true; "
+    "svc power stayon usb; "
+    "settings put system screen_brightness_mode 0; "
+    "settings put system screen_brightness 0"
+)
+_GUARDIAN_RESTORE = (
+    "locksettings set-disabled false; "
+    "svc power stayon false; "
+    "settings put system screen_brightness_mode 1; "
+    "settings put system screen_brightness 128"
+)
+
+
+async def brightness_guardian():
+    """Long-lived adb shell that applies phone display settings while connected
+    and restores them automatically on USB disconnect or container stop."""
+    while True:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "adb", "shell",
+                f"trap '{_GUARDIAN_RESTORE}' EXIT HUP TERM INT; {_GUARDIAN_APPLY}; cat",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            print("[*] phone settings guardian disconnected, restarting...", flush=True)
+        except Exception as e:
+            print(f"[!] phone settings guardian: {e}", flush=True)
+        await asyncio.sleep(3)
+
+
 async def broadcaster():
     """Fan out H.264 to all WebSocket clients. One screenrecord per session."""
     global stream_proc, stream_gen
@@ -222,8 +255,15 @@ async def ws_handler(request):
     global stream_gen
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    stream_gen += 1  # restart screenrecord so every new client gets fresh SPS/PPS
+    was_empty = not clients
     clients.add(ws)
+    if was_empty or stream_proc is None:
+        # No screenrecord running — bump gen so the broadcaster starts one.
+        stream_gen += 1
+    else:
+        # Screenrecord already running; nudge the encoder for a fresh IDR so
+        # the joining client doesn't wait through the next natural keyframe.
+        asyncio.create_task(_adb_input("input keyevent 224"))
     print(f"[*] client connected ({len(clients)} total, gen={stream_gen})", flush=True)
     # During the startup reload window, tell this client to reload so it picks
     # up any code changes deployed with the container.
@@ -459,6 +499,7 @@ async def on_startup(app):
             print(f"[*] native resolution: {NATIVE_W}x{NATIVE_H}", flush=True)
     except Exception:
         pass
+    asyncio.create_task(brightness_guardian())
     asyncio.create_task(broadcaster())
 
 
